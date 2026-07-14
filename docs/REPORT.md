@@ -1,231 +1,118 @@
-# NVFP4 Ternary TPU — Engineering Report
+# NVFP4 Ternary Mini-TPU — Engineering Report
 
 **Date:** 2026-07-14
-**Target:** Tiny Tapeout TTSKY26c, 1×1 tile (~167×108 µm), SkyWater SKY130A
+**Target:** Tiny Tapeout TTSKY26c, 1x2 tile, SkyWater SKY130A
 **Top module:** `tt_um_kashif_fp4_ternary_tpu`
-**Clock:** 50 MHz
-**Result:** 9 cocotb tests passing (RTL + GitHub Actions CI)
+**Clock:** 5 MHz (SPI SCLK <= clk/6)
+**Result:** 7 cocotb tests passing (RTL + GL); GDS, precheck, GL test, viewer green in CI
 
 ---
 
 ## 1. Objective
 
-Demonstrate the first open-silicon accelerator using the NVFP4 (E2M1)
-4-bit floating-point weight format — the same format used in NVIDIA
-Blackwell Tensor Cores — combined with ternary {-1, 0, +1} activations
-that eliminate the hardware multiplier entirely.
+An open-silicon accelerator for the E2M1 4-bit floating-point element type
+(shared by NVFP4 and MXFP4) with ternary activations that eliminate the
+hardware multiplier entirely — plus a second decode mode that runs
+Bonsai/BitNet-style ternary/binary weights against INT4 activations on the
+same PEs.
 
 ## 2. Design Metrics
 
 | Metric | Value |
 |--------|-------|
-| Array size | 4×4 = 16 PEs |
-| Weight format | E2M1, 4-bit (element type shared by NVFP4 and MXFP4; they differ in host-side block scaling — NVFP4: 16-elem blocks with E4M3 scales, MXFP4: 32-elem blocks with E8M0) |
-| Activation format | Ternary {-1, 0, +1}, 2-bit |
-| Multiplier | None (MUX-add) |
-| FFs per PE | 14 (4-bit weight + 10-bit accumulator) |
-| Gates per PE | ~74 (E2M1 LUT + add/sub + accumulator) |
-| Total PEs | 16 |
-| Effective MACs/cycle | 16 |
-| Accumulator | 10-bit signed (max ±192, 9 bits + margin) |
+| Array | 4x4 = 16 PEs, output-stationary systolic |
+| Contraction | K = 4 per pass (= NVFP4 16-element block / 4) |
+| Mode 0 | E2M1 weights (x2 integer domain) x ternary activations |
+| Mode 1 | ternary/binary weights x INT4 activations (RUN flag) |
+| Multiplier | None (mux-add; mode selects E2M1 LUT vs INT4 decode) |
+| Accumulator | 7-bit signed, exact (max 48 mode 0 / 32 mode 1) |
+| Block scaling | Host-side: NVFP4 (16/E4M3+FP32), MXFP4 (32/E8M0), or FP16 group scales |
 | Activation functions | Host-side (correct only after cross-tile accumulation) |
-| Tile size | 1×1 |
-| I/O protocol | Direct pin streaming (no SPI) |
-| Total latency | ~57 cycles (8 load + 18 compute + 32 output) |
+| I/O | SPI, 16-bit instructions, receive-only; results via STORE on uo_out |
+| Wavefront | 10 cycles per RUN (skewed, reference mini-TPU pattern) |
+| Tile / utilization | 1x2 at ~64% effective (measured in CI) |
 
 ## 3. Architecture
 
-### Dataflow: Weight-Stationary Broadcast
+Ported from the silicon-proven reference
+([MILOUDIAS/IEEE_ttsky_mini_tpu_spi](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi)):
+operand memories, skewed wavefront control (line i streams during
+t in [i+1, i+4]), activations flowing right, weights flowing down, results
+accumulating in place. Both operand streams change every cycle, so the array
+computes true dot products — C[i][c] = sum_k A[i][k] * B[k][c].
 
-Weights are loaded once into each PE's 4-bit register and held for the
-entire compute block. Activations are broadcast down columns — all PEs
-in a column receive the same ternary value each cycle.
+PE datapath: 2-bit ternary code steers a mux-add (+w / -w / skip) of the
+4-bit value operand, decoded per-RUN as E2M1 (LUT to 0,1,2,3,4,6,8,12 with
+sign) or INT4 two's complement. One 7-bit adder, no multiplier. Pipeline
+registers are no-reset dfxtp cells (area); accumulators have async reset.
 
-```
-C[i][j] = W[i][j] × sum_k(act_k[j])
-```
+See `Architecture.drawio` and `Dataflow.drawio`.
 
-This is a matrix-vector multiply. For matrix-matrix, the host chains
-multiple calls (see MNIST application in info.md).
+## 4. Key Engineering Decisions (with the data that forced them)
 
-### PE Design
-
-```
-                    ┌─────────┐
-  weight_in[3:0] ──►│ weight  │── weight_code[3:0]
-                    │ reg (4b)│
-                    └─────────┘
-                         │ combinational decode
-                    ┌─────────┐
-                    │ E2M1    │── w_mag[3:0], w_sign
-                    │ LUT     │
-                    └─────────┘
-                         │
-  act_in[1:0] ──────────┤
-                    ┌─────────┐
-                    │ MUX-add │── product (±w_val or 0)
-                    └─────────┘
-                         │
-                    ┌─────────┐
-  acc_clear ────────►│ 10-bit  │── acc_out[9:0]
-  act_valid ────────►│ acc reg │
-                    └─────────┘
-```
-
-Only 2 registers per PE:
-- `weight_code` (4-bit, no reset — loaded before use)
-- `acc` (10-bit signed, async reset — must be 0 at start of each block)
-
-Weight magnitude decoded combinationally via 8-entry LUT:
-`{exp[1:0], mant}` → `|value|×2` ∈ {0, 1, 2, 3, 4, 6, 8, 12}
-
-### Control FSM
-
-4-state FSM encoded in `uio_in[7:6]`:
-- **IDLE** (00): hold, status output
-- **LOAD** (01): 8 cycles, 2 weights/cycle via `ui_in`
-- **COMPUTE** (10): 18 cycles (1 clear+MAC + 16 MAC + 1 drain), then snapshot
-- **OUTPUT** (11): 32 cycles, 16 results × 2 bytes
-
-ASIC optimizations (per TT HDL guide /hdl/fpga_vs_asic/):
-- `weight_load`, `weight_a/b`, `load_idx` combinational pass-through
-  (saves ~11 FFs — mode-gated, not state-dependent)
-- `act0_r..act3_r`, `act_valid_r`, `acc_clear_r` registered for timing
-- `acc_snap[0:15]` = 160 FFs for latched results
-- Activation functions host-side by design
-
-### Output Path
-
-`(* keep = "true" *)` FFs for `uio_oe` and `uio_out` prevent Yosys
-from tying them to `conb` cells whose internal pulldown causes magic
-LVS to short pins to VGND (pattern adopted from Mini-TPU `tt_um_tpu.v`).
-
-## 4. Comparison with Other TT TPU Designs
-
-| Feature | Mini-TPU (IEEE) | PFW TPU | **This design** |
-|---------|-----------------|---------|-----------------|
-| Array | 3×3 = 9 PEs | 2×2 = 4 PEs | **4×4 = 16 PEs** |
-| Weight format | INT4 | INT8 | **E2M1 (NVFP4)** |
-| Activation | INT4 | INT8 | **Ternary {-1,0,+1}** |
-| Multiplier | 4×4 hardware | 8×8 hardware | **None (MUX-add)** |
-| PE registers | 3 | 3 | **2** |
-| PE gates | ~200+ | ~400+ | **~74** |
-| I/O | SPI (12-bit instr) | Parallel streaming | **Parallel streaming** |
-| Weight load | ~108+ cycles | 8 cycles | **8 cycles** |
-| Total latency | ~220+ cycles | ~41 cycles | **~57 cycles** |
-| MACs/cycle | 0.04 | 0.10 | **0.28** |
-| Tile | 1×1 | 1×2 | **1×1** |
-| ReLU | No | Yes | **No (host-side by design)** |
-| Numerics | Educational INT4 | INT8 | **NVFP4 (Blackwell)** |
+- **1x1 does not close for this class of design with exact accumulators.**
+  Three CI attempts at 3x3-on-1x1 landed at 82.7% / 80.6% / 79.0% effective
+  utilization and all failed detailed placement (8-50 unplaceable instances
+  at or after CTS). The reference fits 1x1 only via 4-bit *truncating*
+  accumulators (results mod 16) plus a die-area fix. We kept exactness and
+  took 1x2 — then spent the headroom on a 4x4 array (63.9% utilization,
+  fully green).
+- **SPI is receive-only.** The reference's MISO accumulator readback (63-bit
+  mux + counter) duplicated the STORE readout path; removed for area.
+- **No activation-function instruction.** Nonlinearities are only correct
+  after cross-tile partial-sum accumulation and bias, which happen on the
+  host; a per-pass on-chip clamp invites silently wrong tiled inference.
+- **Constant pins driven from two shared (* keep *) FFs** (one 0, one 1)
+  — avoids conb/VGND LVS merges without per-pin registers.
+- **CLOCK_PERIOD relaxed to 100 ns** in config.json (design runs at 5 MHz);
+  the template's 20 ns constraint wasted area on needless timing repair.
+- **Throwaway first RUN after power-up** (documented in info.md): no-reset
+  pipeline registers hold random values until a wavefront flushes them; the
+  GL testbench does this via `gl_preheat()`.
 
 ## 5. Verification
 
-### Test Suite (9 tests, all passing)
+Golden model is an independent dense matmul built from first principles
+(decode E2M1/INT4 nibbles and ternary codes, multiply in plain Python) — it
+shares no structure with the RTL.
 
-| Test | What it verifies | Pattern source |
-|------|-----------------|---------------|
-| `test_basic_mac` | Known weights + column-specific activations | Original |
-| `test_varied_weights` | All 8 E2M1 magnitudes | Original |
-| `test_int4_mode` | INT4 decode mode + mode latching | Original |
-| `test_zero_weights` | Zero weights → zero output | Mini-TPU pattern |
-| `test_zero_activations` | Zero activations → zero output | Mini-TPU pattern |
-| `test_max_accumulation` | Boundary: weight=6.0, 16×+1 = 192 | Mini-TPU pattern |
-| `test_negative_weights` | Negative E2M1 with mixed activations | Original |
-| `test_random` | 50 seeded random trials | Mini-TPU pattern |
-| `test_back_to_back` | Consecutive matmuls, state reset | Mini-TPU pattern |
+| Test | What it verifies |
+|------|-----------------|
+| `test_known_matmul` | Hand-checked matmul, mixed E2M1 values |
+| `test_ternary_semantics` | +1 adds, -1 subtracts, 0 skips |
+| `test_int4_mode` | INT4 decode incl. discriminators (0x8: -0 vs -8), mode latched per RUN |
+| `test_not_degenerate` | Equal-sum activations must differ (guards against w*sum collapse) |
+| `test_run_clears_accumulators` | Back-to-back RUNs don't double |
+| `test_negative_zero` | E2M1 -0 is exact zero |
+| `test_random` | 12 randomized full-coverage trials, random mode |
 
-### Gate-Level Test Infrastructure
+Gate-level: `GATES=yes` runs the same suite (3 random trials) against the
+synthesized netlist with `gl_preheat()` and VPWR/VGND wiring in `tb.v`.
 
-- `gl_preheat()`: runs zero-weight matmul to flush X from pipeline regs
-- `_safe_int()`: X-safe LogicArray reads for GL simulation
-- `GL_TEST` environment variable reduces random trial count
-- Testbench `tb.v` includes `GL_TEST` ifdefs for `VPWR`/`VGND`
-
-### Known Limitations
-
-- Golden model mirrors PE structure (not fully independent — improvement planned)
-- Weight register has no reset (requires `gl_preheat()` in GL sim)
-- Matrix-vector only (not true GEMM — broadcast architecture)
-- No on-chip weight memory (weights re-streamed each call)
-
-## 6. HDL Guide Compliance
-
-Per [tinytapeout.com/hdl/important/](https://tinytapeout.com/hdl/important/):
-
-- ✅ Top module named `tt_um_kashif_fp4_ternary_tpu` (unique, with username)
-- ✅ Exact module port definition matching TT template
-- ✅ No `initial` blocks; explicit `rst_n` reset
-- ✅ All outputs assigned (`uo_out`, `uio_out`, `uio_oe`)
-- ✅ `(* keep *)` FFs for unused output pins (LVS safety)
-- ✅ `_unused` wire for unused inputs
-- ✅ `default_nettype none`
-- ✅ No `config.tcl` modifications
-- ✅ Design not optimised away (all 16 accumulators read out)
-
-Per [tinytapeout.com/hdl/fpga_vs_asic/](https://tinytapeout.com/hdl/fpga_vs_asic/):
-
-- ✅ Minimal flops (combinational weight decode, only 2 regs/PE)
-- ✅ Deeper combinational logic with fewer pipeline registers
-- ✅ Async reset only on functionally-required registers (accumulator)
-
-## 7. File Structure
+## 6. File Structure
 
 ```
 src/
-  project.v              # Top-level TT module
-  pe.v                   # Processing element: E2M1 weight + ternary MAC
-  systolic_array_4x4.v   # 4×4 weight-stationary grid
-  control_fsm.v          # IDLE/LOAD/COMPUTE/OUTPUT state machine
-docs/
-  info.md                # Datasheet (protocol, E2M1 table, application)
-  REPORT.md              # This file
+  project.v     # TT top level, SPI pin wiring, constant-pin FFs
+  tpu.v         # control + memories + array + result mux
+  spi.v         # 16-bit instruction receiver (receive-only)
+  control.v     # LOAD/RUN/STORE decode, skewed wavefront counter
+  memory_a.v    # 4x4 ternary operand memory (2-bit)
+  memory_b.v    # 4x4 value operand memory (4-bit)
+  array.v       # 4x4 systolic array
+  pe.v          # dual-decode mux-add PE
 test/
-  tb.v                   # Verilog testbench (GL_TEST compatible)
-  test.py                # 9 cocotb tests
-  Makefile               # icarus/cocotb build
-DESIGN_NOTES.md           # Int7+1 structured sparsity idea
-info.yaml                 # TT metadata: 1x1 tile, 50MHz, SKY130A
+  tb.v, test.py, Makefile
+docs/
+  info.md, Architecture.drawio, Dataflow.drawio, REPORT.md
 ```
 
-## 8. Design Rationale (from Roune's document)
+## 7. Companion Design
 
-Key principles from Roune's "Designing AI Chip Software and Hardware" (2026)
-that validate our design choices:
-
-- **"FP4 for activations is very challenging"** (Numerics section): We use
-  ternary {-1, 0, +1} activations instead of FP4 — avoiding the challenge
-  while keeping activations ultra-low-precision.
-
-- **"Integer summation is cheaper than FP summation"** (Numerics nerd box):
-  Our 10-bit signed integer accumulator is cheaper than FP32 accumulation.
-  Roune notes: "The product of two FP4's can be represented in an int8 using
-  fixed point. So it might actually be cheaper and also more accurate to sum
-  FP4 products in integer values instead of floating point."
-
-- **"8 bits is always sufficient for inference"** (Numerics section): Our
-  E2M1 weights are 4-bit and ternary activations are 2-bit — well within
-  the sufficient range when combined with block-scale dequantization.
-
-- **"Systolic array numerics do not need to be the same as scalar and vector
-  numerics"** (Numerics section): Our ASIC uses E2M1+ternary while the host
-  RP2040 applies E4M3/FP32 scales in software — exactly the split Roune
-  recommends.
-
-- **"Not all systolic arrays are made equal"** (Numerics section): By
-  eliminating the hardware multiplier entirely (ternary activations), our
-  PEs are ~3× smaller than INT4 designs, allowing 16 PEs in a 1×1 tile.
-
-## 9. References
-
-- [NVFP4: NVIDIA Blackwell format](https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/)
-- [OCP Microscaling (MX) Formats spec](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf)
-- [Microscaling Data Formats for Deep Learning (arXiv:2310.10537)](https://arxiv.org/abs/2310.10537)
-- [Ternary Weight Networks (Li et al. 2016, arXiv:1605.04711)](https://arxiv.org/abs/1605.04711)
-- [Binarized Neural Networks (Hubara et al. 2016, arXiv:1602.02830)](https://arxiv.org/abs/1602.02830)
-- [vLLM Qwix: NVFP4 quantization on TPU](https://github.com/vllm-project/tpu-inference)
-- [PFW TPU](https://github.com/wangantian/pfw_tpu) — INT8 2×2 systolic, TT SKY26b
-- [Mini-TPU v2](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi) — INT4 3×3 systolic, TT SKY26b
-- [FP8 MAC Unit](https://github.com/chatelao/ttihp-fp8-mul) — OCP MX streaming MAC, TT IHP26a
-- [TT HDL Guide](https://tinytapeout.com/hdl/) — FPGA-to-ASIC considerations
-- [TT Tech Specs](https://tinytapeout.com/specs/) — Clock, GPIO, analog, memory constraints
-- [Companion design: Int7+1 Sparse TPU](https://github.com/kashif/kashif-int7-sparse-tpu)
+[kashif-int7-sparse-tpu](https://github.com/kashif/kashif-int7-sparse-tpu):
+same reference-derived skeleton, different numerics — Int7+1 weights with
+1:2 structured sparsity along the contraction axis (select bit muxes an
+INT4 activation pair; a mux replaces the second multiplier) plus a native
+int8 dense mode, 3x3 with 13-bit exact accumulators on a 2x2 tile.
+Together the two chips cover the sparse-integer and low-bit-float/ternary
+corners of Roune's "numerics as competitive lever" argument.
