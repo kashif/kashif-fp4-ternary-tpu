@@ -2,9 +2,9 @@
 
 # NVFP4 Ternary Mini-TPU
 
-A 3x3 output-stationary systolic array computing `C = A x W` with **NVFP4
+A 4x4 output-stationary systolic array computing `C = A x W` with **NVFP4
 (E2M1) 4-bit floating-point weights** and **ternary {-1, 0, +1} activations**
-— and **no hardware multiplier anywhere**. Fits a single Tiny Tapeout 1x1
+— and **no hardware multiplier anywhere**. Fits a Tiny Tapeout 1x2
 tile.
 
 - [Read the documentation for project](docs/info.md)
@@ -46,27 +46,29 @@ especially for LLMs. The chip computes raw E2M1 products in the x2 integer
 domain, exactly; the host applies whichever block-scaling scheme it wants
 during dequantization, so the same silicon serves **both** formats. Because
 the accumulators are exact, the host can apply per-block scales to bit-exact
-partial sums (a K=16 NVFP4 block spans multiple K=3 tiles) with no
+partial sums (a K=16 NVFP4 block is exactly four K=4 tiles) with no
 accumulated rounding from the hardware.
 
 ### A real systolic matmul
 
 The architecture is the silicon-proven
-[Mini-TPU v2](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi): operand
-memories, skewed 7-cycle wavefront, activations flowing right, weights
-flowing down, results accumulating in place. Both operand streams change
-every cycle — the array computes true dot products
-(`C[i][c] = sum_k A[i][k] * W[k][c]`), verified against an independent golden
-model.
+[Mini-TPU v2](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi) scaled to
+4x4: operand memories, skewed 10-cycle wavefront, activations flowing right,
+weights flowing down, results accumulating in place. Both operand streams
+change every cycle — the array computes true dot products
+(`C[i][c] = sum_k A[i][k] * W[k][c]`, K = 4), verified against an independent
+golden model.
 
 ```
-            W col 0    W col 1    W col 2      (E2M1 nibbles, skewed)
-               |          |          |
-A row 0 --> [PE 00] -> [PE 01] -> [PE 02]      A rows: ternary codes
-               |          |          |
-A row 1 --> [PE 10] -> [PE 11] -> [PE 12]
-               |          |          |
-A row 2 --> [PE 20] -> [PE 21] -> [PE 22]
+            W col 0    W col 1    W col 2    W col 3    (E2M1 nibbles, skewed)
+               |          |          |          |
+A row 0 --> [PE 00] -> [PE 01] -> [PE 02] -> [PE 03]    A rows: ternary codes
+               |          |          |          |
+A row 1 --> [PE 10] -> [PE 11] -> [PE 12] -> [PE 13]
+               |          |          |          |
+A row 2 --> [PE 20] -> [PE 21] -> [PE 22] -> [PE 23]
+               |          |          |          |
+A row 3 --> [PE 30] -> [PE 31] -> [PE 32] -> [PE 33]
 ```
 
 ### SPI instruction set (16 bits, LSB-first; SCLK <= clk/6)
@@ -75,7 +77,7 @@ A row 2 --> [PE 20] -> [PE 21] -> [PE 22]
 |-------------|------------------------|-------------|
 | `LOAD A`    | `10 0 rr 0ee 000000tt` | Ternary activation into row `r`, element `e` |
 | `LOAD B`    | `10 1 cc 0kk 0000wwww` | E2M1 nibble into column `c`, step `k` |
-| `RUN`       | `01 r 0000000000000`   | Clear accumulators, run 7 cycles; `r`=1 = ReLU |
+| `RUN`       | `01 r 0000000000000`   | Clear accumulators, run 10 cycles; `r`=1 = ReLU |
 | `STORE`     | `11 0 rr cc 000000000` | C[r][c] as sign-extended byte on `uo_out` |
 
 Pins: `ui[0]`=MOSI, `ui[1]`=CS, `ui[2]`=SCLK; `uo_out`=result byte;
@@ -90,21 +92,21 @@ src/
   tpu.v         # Core: control + memories + array + result mux (ReLU)
   spi.v         # SPI instruction receiver, 16-bit, receive-only
   control.v     # LOAD/RUN/STORE decode, skewed wavefront counter
-  memory_a.v    # Activations: 3x3 ternary (2-bit)
-  memory_b.v    # Weights: 3x3 E2M1 nibbles
-  array.v       # 3x3 systolic array, 7-bit exact accumulators
+  memory_a.v    # Activations: 4x4 ternary (2-bit)
+  memory_b.v    # Weights: 4x4 E2M1 nibbles
+  array.v       # 4x4 systolic array, 7-bit exact accumulators
   pe.v          # E2M1 decode + ternary mux-add MAC (no multiplier)
 test/
   tb.v          # Verilog testbench (GL_TEST compatible)
   test.py       # 7 cocotb tests with independent golden model
   Makefile      # icarus/cocotb build
-info.yaml       # TT metadata: 1x1 tile, 5 MHz, SKY130A
+info.yaml       # TT metadata: 1x2 tile, 5 MHz, SKY130A
 ```
 
 ## Verification
 
 7 cocotb tests drive the SPI interface like an external host and compare all
-9 results against an independent golden model:
+16 results against an independent golden model:
 
 | Test | Description |
 |------|-------------|
@@ -119,7 +121,7 @@ info.yaml       # TT metadata: 1x1 tile, 5 MHz, SKY130A
 ## Target
 
 - **Shuttle**: TTSKY26c (SkyWater SKY130A)
-- **Tile**: 1x1 (~167x108 um)
+- **Tile**: 1x2 (2 tiles of ~167x108 um)
 - **Clock**: 5 MHz (SPI SCLK <= 833 kHz)
 
 ## References

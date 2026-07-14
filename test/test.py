@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Kashif
 # SPDX-License-Identifier: Apache-2.0
 #
-# NVFP4 ternary mini-TPU tests.
+# NVFP4 ternary mini-TPU tests (4x4 array, K = 4).
 #
 # The golden model is an INDEPENDENT matrix multiply built from first
 # principles (decode E2M1 nibbles and ternary codes, then plain
@@ -17,7 +17,7 @@ from cocotb.triggers import ClockCycles
 
 GL_TEST = bool(os.environ.get("GATES") == "yes")
 
-N = 3      # array is N x N, contraction depth K = 3
+N = 4      # array is N x N, contraction depth K = 4
 
 OP_RUN   = 0b01
 OP_LOAD  = 0b10
@@ -70,8 +70,8 @@ def instr_store(row, col):
 # ----------------------------------------------------------------------
 
 def golden_matmul(A, wnibbles, relu=0):
-    """C = A (3x3 ternary) x W (3x3 E2M1, x2 integer domain).
-    wnibbles[col][k] mirrors the LOAD B addressing. Max |C| = 36."""
+    """C = A (4x4 ternary) x W (4x4 E2M1, x2 integer domain).
+    wnibbles[col][k] mirrors the LOAD B addressing. Max |C| = 48."""
     C = [[0] * N for _ in range(N)]
     for i in range(N):
         for c in range(N):
@@ -97,8 +97,8 @@ async def spi_send(dut, instr):
         drive(bit, 0, 1)
         await ClockCycles(dut.clk, SCLK_HALF)
     drive(0, 1, 0)
-    # Gap covers the data_ready pulse and a full RUN (7 cycles)
-    await ClockCycles(dut.clk, 12)
+    # Gap covers the data_ready pulse and a full RUN (10 cycles)
+    await ClockCycles(dut.clk, 14)
 
 
 async def hw_reset(dut):
@@ -171,13 +171,15 @@ async def test_known_matmul(dut):
     start_clock(dut)
     await hw_reset(dut)
 
-    A = [[1, -1, 0],
-         [0, 1, 1],
-         [-1, -1, 1]]
+    A = [[1, -1, 0, 1],
+         [0, 1, 1, -1],
+         [-1, -1, 1, 0],
+         [1, 0, -1, -1]]
     # wnibbles[col][k]: 0x1=1, 0x9=-1, 0x7=12, 0xF=-12, 0x5=6, 0x0=0
-    wn = [[0x1, 0x9, 0x7],
-          [0xF, 0x5, 0x0],
-          [0x3, 0xB, 0x6]]
+    wn = [[0x1, 0x9, 0x7, 0x2],
+          [0xF, 0x5, 0x0, 0xA],
+          [0x3, 0xB, 0x6, 0x1],
+          [0x7, 0x0, 0xF, 0x4]]
 
     results = await run_matmul(dut, A, wn)
     dut._log.info(f"results: {results}")
@@ -192,12 +194,13 @@ async def test_ternary_semantics(dut):
     await hw_reset(dut)
 
     # Single weight 12 at W[k=1][col=0]; everything else zero
-    wn = [[0x0, 0x7, 0x0],
-          [0x0, 0x0, 0x0],
-          [0x0, 0x0, 0x0]]
+    wn = [[0x0, 0x7, 0x0, 0x0],
+          [0x0, 0x0, 0x0, 0x0],
+          [0x0, 0x0, 0x0, 0x0],
+          [0x0, 0x0, 0x0, 0x0]]
 
     for t, expected in ((1, 12), (-1, -12), (0, 0)):
-        A = [[0, t, 0]] * 3
+        A = [[0, t, 0, 0]] * N
         results = await run_matmul(dut, A, wn)
         for i in range(N):
             assert results[i][0] == expected, (
@@ -211,10 +214,11 @@ async def test_relu(dut):
     start_clock(dut)
     await hw_reset(dut)
 
-    A = [[1, 1, 1]] * 3
-    wn = [[0x9, 0x9, 0x9],    # col 0: sum = -3
-          [0x1, 0x1, 0x1],    # col 1: sum = +3
-          [0xF, 0x0, 0x0]]    # col 2: sum = -12
+    A = [[1, 1, 1, 1]] * N
+    wn = [[0x9, 0x9, 0x9, 0x9],   # col 0: sum = -4
+          [0x1, 0x1, 0x1, 0x1],   # col 1: sum = +4
+          [0xF, 0x0, 0x0, 0x0],   # col 2: sum = -12
+          [0x7, 0xF, 0x0, 0x0]]   # col 3: sum = 0
 
     plain = await run_matmul(dut, A, wn, relu=0)
     check(dut, plain, golden_matmul(A, wn, relu=0), "no-relu")
@@ -232,11 +236,12 @@ async def test_not_degenerate(dut):
     start_clock(dut)
     await hw_reset(dut)
 
-    A1 = [[1, -1, 0]] * 3
-    A2 = [[-1, 1, 0]] * 3           # same row sums (0), swapped order
-    wn = [[0x1, 0x7, 0x0],
-          [0x5, 0x2, 0x9],
-          [0x3, 0x0, 0xF]]
+    A1 = [[1, -1, 0, 0]] * N
+    A2 = [[-1, 1, 0, 0]] * N        # same row sums (0), swapped order
+    wn = [[0x1, 0x7, 0x0, 0x2],
+          [0x5, 0x2, 0x9, 0x0],
+          [0x3, 0x0, 0xF, 0x6],
+          [0x0, 0x4, 0x1, 0xB]]
 
     r1 = await run_matmul(dut, A1, wn)
     r2 = await run_matmul(dut, A2, wn)
@@ -253,8 +258,9 @@ async def test_run_clears_accumulators(dut):
     start_clock(dut)
     await hw_reset(dut)
 
-    A = [[1, 1, -1], [0, 1, 0], [-1, -1, -1]]
-    wn = [[0x7, 0x5, 0x3], [0xF, 0xD, 0xB], [0x1, 0x2, 0x4]]
+    A = [[1, 1, -1, 0], [0, 1, 0, 1], [-1, -1, -1, 1], [1, 0, 1, -1]]
+    wn = [[0x7, 0x5, 0x3, 0x1], [0xF, 0xD, 0xB, 0x9],
+          [0x1, 0x2, 0x4, 0x6], [0x8, 0x3, 0xC, 0x5]]
 
     expected = golden_matmul(A, wn)
     await load_operands(dut, A, wn)
@@ -272,8 +278,9 @@ async def test_negative_zero(dut):
     start_clock(dut)
     await hw_reset(dut)
 
-    A = [[1, -1, 1]] * 3
-    wn = [[0x8, 0x8, 0x8], [0x8, 0x0, 0x8], [0x0, 0x8, 0x0]]
+    A = [[1, -1, 1, -1]] * N
+    wn = [[0x8, 0x8, 0x8, 0x8], [0x8, 0x0, 0x8, 0x0],
+          [0x0, 0x8, 0x0, 0x8], [0x8, 0x8, 0x0, 0x0]]
 
     results = await run_matmul(dut, A, wn)
     check(dut, results, [[0] * N for _ in range(N)], "neg-zero")

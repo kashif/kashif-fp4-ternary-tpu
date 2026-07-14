@@ -1,41 +1,42 @@
 /*
- * 3x3 output-stationary systolic array, E2M1 x ternary edition.
+ * 4x4 output-stationary systolic array, E2M1 x ternary edition.
  *
  * Structure follows the reference mini-TPU array.v: activations flow
  * right (2-bit ternary pipes), weights flow down (4-bit E2M1 pipes),
- * results accumulate in place in 7-bit exact accumulators.
+ * results accumulate in place in 7-bit exact accumulators
+ * (K = 4: max |C| = 48, still exact in 7 bits).
  */
 
 `default_nettype none
 
 module array (
-    input  wire        clk,
-    input  wire        rst_n,
-    input  wire        we,
-    input  wire        clr,
+    input  wire         clk,
+    input  wire         rst_n,
+    input  wire         we,
+    input  wire         clr,
 
-    input  wire [5:0]  a_in,     // 3 rows x ternary activation
-    input  wire [11:0] b_in,     // 3 cols x E2M1 weight
-    output wire [62:0] data_out  // 9 accumulators x 7 bits, row-major
+    input  wire [7:0]   a_in,     // 4 rows x ternary activation
+    input  wire [15:0]  b_in,     // 4 cols x E2M1 weight
+    output wire [111:0] data_out  // 16 accumulators x 7 bits, row-major
 );
 
-    wire [1:0] a_pipe [0:2][0:3];
-    wire [3:0] b_pipe [0:3][0:2];
-    wire [6:0] c_bus  [0:2][0:2];
+    wire [1:0] a_pipe [0:3][0:4];
+    wire [3:0] b_pipe [0:4][0:3];
+    wire [6:0] c_bus  [0:3][0:3];
 
     genvar row, col;
     generate
-        for (row = 0; row < 3; row = row + 1) begin : map_a_in
+        for (row = 0; row < 4; row = row + 1) begin : map_a_in
             assign a_pipe[row][0] = a_in[2*row +: 2];
         end
-        for (col = 0; col < 3; col = col + 1) begin : map_b_in
+        for (col = 0; col < 4; col = col + 1) begin : map_b_in
             assign b_pipe[0][col] = b_in[4*col +: 4];
         end
     endgenerate
 
     generate
-        for (row = 0; row < 3; row = row + 1) begin : ROWS
-            for (col = 0; col < 3; col = col + 1) begin : COLS
+        for (row = 0; row < 4; row = row + 1) begin : ROWS
+            for (col = 0; col < 4; col = col + 1) begin : COLS
                 pe pe_inst (
                     .clk   (clk),
                     .rst_n (rst_n),
@@ -52,9 +53,9 @@ module array (
     endgenerate
 
     generate
-        for (row = 0; row < 3; row = row + 1) begin : flat_row
-            for (col = 0; col < 3; col = col + 1) begin : flat_col
-                assign data_out[7*(row*3+col) +: 7] = c_bus[row][col];
+        for (row = 0; row < 4; row = row + 1) begin : flat_row
+            for (col = 0; col < 4; col = col + 1) begin : flat_col
+                assign data_out[7*(row*4+col) +: 7] = c_bus[row][col];
             end
         end
     endgenerate

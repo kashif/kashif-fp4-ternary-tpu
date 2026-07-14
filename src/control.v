@@ -7,12 +7,12 @@
  *   [15:14] opcode: 00=NOP, 01=RUN, 10=LOAD, 11=STORE
  *
  *   LOAD:  [13]    mem_select (0 = A activations, 1 = B weights)
- *          [12:11] line  (A: row 0-2, B: column 0-2)
- *          [10:8]  elem  (element / contraction step 0-2)
+ *          [12:11] line  (A: row 0-3, B: column 0-3)
+ *          [9:8]   elem  (element / contraction step 0-3)
  *          [7:0]   imm   (A: ternary in imm[1:0], B: E2M1 in imm[3:0])
  *
  *   RUN:   [13] relu_en. Clears accumulators, streams the skewed
- *          wavefront for 2N+1 = 7 cycles (K=3 contraction).
+ *          wavefront for 10 cycles (N = K = 4 contraction).
  *
  *   STORE: [12:11] row, [10:9] col
  *          Latches the selection; result output holds until next STORE.
@@ -39,15 +39,15 @@ module control (
     output wire        mema_write_enable,
     output wire [1:0]  mema_write_line,
     output wire [1:0]  mema_write_elem,
-    output wire [2:0]  mema_read_enable,
-    output wire [5:0]  mema_read_elem,
+    output wire [3:0]  mema_read_enable,
+    output wire [7:0]  mema_read_elem,
 
     output wire [3:0]  memb_data_in,
     output wire        memb_write_enable,
     output wire [1:0]  memb_write_line,
     output wire [1:0]  memb_write_elem,
-    output wire [2:0]  memb_read_enable,
-    output wire [5:0]  memb_read_elem,
+    output wire [3:0]  memb_read_enable,
+    output wire [7:0]  memb_read_elem,
 
     output reg         ready_to_send
 );
@@ -56,7 +56,8 @@ module control (
     localparam [1:0] LOAD  = 2'b10;
     localparam [1:0] STORE = 2'b11;
 
-    // Wavefront counter: useful range 1..7 (= 2N+1)
+    // Wavefront counter: useful range 1..10. The last product lands at
+    // t = (N-1) + 1 + (K-1) + (N-1) = 10 for N = K = 4.
     reg [3:0] counter;
 
     wire [1:0] opcode     = instruction[15:14];
@@ -84,7 +85,7 @@ module control (
         if (!rst_n) begin
             counter       <= 4'd0;
             ready_to_send <= 1'b0;
-        end else if (counter == 4'd7) begin
+        end else if (counter == 4'd10) begin
             counter       <= 4'd0;
             ready_to_send <= 1'b1;
         end else if (is_run)
@@ -95,19 +96,20 @@ module control (
 
     // ------------------------------------------------------------------
     // Shared skewed read pattern (identical for A rows and B columns):
-    // line i streams its 3 elements during counter in [i+1, i+3].
+    // line i streams its 4 elements during counter in [i+1, i+4].
     // ------------------------------------------------------------------
-    wire [2:0] read_enable_shared;
-    wire [5:0] read_elem_shared;
+    wire [3:0] read_enable_shared;
+    wire [7:0] read_elem_shared;
 
     genvar i;
     generate
-        for (i = 0; i < 3; i = i + 1) begin : read_pattern_gen
-            assign read_enable_shared[i] = (counter > i) && (counter < (i + 4));
+        for (i = 0; i < 4; i = i + 1) begin : read_pattern_gen
+            assign read_enable_shared[i] = (counter > i) && (counter < (i + 5));
             assign read_elem_shared[2*i +: 2] =
                 (counter == (i + 1)) ? 2'd0 :
                 (counter == (i + 2)) ? 2'd1 :
-                (counter == (i + 3)) ? 2'd2 : 2'd0;
+                (counter == (i + 3)) ? 2'd2 :
+                (counter == (i + 4)) ? 2'd3 : 2'd0;
         end
     endgenerate
 

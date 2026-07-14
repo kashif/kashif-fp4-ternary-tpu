@@ -11,7 +11,7 @@
  * (00=0, 01=+1, 10=-1, 11 reserved=0). The "multiply" is a mux-add:
  *   +1 -> acc += w,  -1 -> acc -= w,  0 -> acc unchanged.
  *
- * K = 3 contraction: max |acc| = 3 * 12 = 36, exact in 7-bit signed.
+ * K = 4 contraction: max |acc| = 4 * 12 = 48, exact in 7-bit signed.
  *
  * Accumulators have async reset; pipeline regs are no-reset dfxtp
  * (area — reference pattern). Gate-level X from the no-reset regs is

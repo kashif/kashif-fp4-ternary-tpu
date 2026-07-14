@@ -2,10 +2,11 @@
  * NVFP4 ternary mini-TPU core: control + operand memories + 3x3
  * systolic array + result readout mux.
  *
- * Computes C = A x W with A a 3x3 ternary activation matrix and W a
- * 3x3 E2M1 (NVFP4) weight matrix, in the x2 integer domain. Results
- * are exact 7-bit signed values (max |C| = 36), read out one byte at
- * a time via STORE, with optional ReLU latched at RUN.
+ * Computes C = A x W with A a 4x4 ternary activation matrix and W a
+ * 4x4 E2M1 (NVFP4) weight matrix, in the x2 integer domain. Results
+ * are exact 7-bit signed values (max |C| = 48), read out one byte at
+ * a time via STORE, with optional ReLU latched at RUN. K = 4 divides
+ * the NVFP4 16-element block exactly (4 tiles per block).
  */
 
 `default_nettype none
@@ -19,7 +20,7 @@ module tpu (
     output wire [7:0]  result
 );
 
-    wire [62:0] array_data_out;
+    wire [111:0] array_data_out;
 
     wire        array_write_enable;
     wire        array_clear;
@@ -30,18 +31,18 @@ module tpu (
     wire        mema_write_enable;
     wire [1:0]  mema_write_line;
     wire [1:0]  mema_write_elem;
-    wire [2:0]  mema_read_enable;
-    wire [5:0]  mema_read_elem;
+    wire [3:0]  mema_read_enable;
+    wire [7:0]  mema_read_elem;
 
     wire [3:0]  memb_data_in;
     wire        memb_write_enable;
     wire [1:0]  memb_write_line;
     wire [1:0]  memb_write_elem;
-    wire [2:0]  memb_read_enable;
-    wire [5:0]  memb_read_elem;
+    wire [3:0]  memb_read_enable;
+    wire [7:0]  memb_read_elem;
 
-    wire [5:0]  array_a_in;
-    wire [11:0] array_b_in;
+    wire [7:0]  array_a_in;
+    wire [15:0] array_b_in;
 
     control control_unit (
         .clk                (clk),
@@ -103,19 +104,17 @@ module tpu (
     // Result readout: STORE latches {row, col}; the selected accumulator
     // (optionally ReLU'd) drives `result` until the next STORE.
     // ------------------------------------------------------------------
-    wire [6:0] acc [0:8];
+    wire [6:0] acc [0:15];
     genvar i;
     generate
-        for (i = 0; i < 9; i = i + 1) begin : extract_results
+        for (i = 0; i < 16; i = i + 1) begin : extract_results
             assign acc[i] = array_data_out[7*i +: 7];
         end
     endgenerate
 
-    // Index arithmetic in 4 bits — 2-bit operands would wrap modulo 4
-    wire [3:0] sel_idx = {2'b0, store_row} * 4'd3 + {2'b0, store_col};
-    wire [6:0] selected = (store_row < 2'd3 && store_col < 2'd3)
-        ? acc[sel_idx]
-        : 7'd0;
+    // row*4 + col is just concatenation — no index arithmetic to get wrong
+    wire [3:0] sel_idx = {store_row, store_col};
+    wire [6:0] selected = acc[sel_idx];
 
     wire [6:0] relued = (relu_en_latched && selected[6]) ? 7'd0 : selected;
 

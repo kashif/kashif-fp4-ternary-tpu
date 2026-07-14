@@ -5,7 +5,7 @@ sections.
 
 ## How it works
 
-A mini TPU built around a **3x3 output-stationary systolic array** that
+A mini TPU built around a **4x4 output-stationary systolic array** that
 computes `C = A x W` with **ternary activations {-1, 0, +1}** and **NVFP4
 (E2M1) 4-bit floating-point weights** — the format introduced in NVIDIA
 Blackwell Tensor Cores. There is **no hardware multiplier anywhere**: with
@@ -17,7 +17,7 @@ ternary activations the multiply-accumulate reduces to a mux-add,
 
 E2M1 weights are decoded combinationally to the x2 integer domain
 (0, 1, 2, 3, 4, 6, 8, 12 with sign; -0 = 0), so results are exact 7-bit
-signed integers (max |C| = 36). Block scaling happens on the host during
+signed integers (max |C| = 48). Block scaling happens on the host during
 dequantization, which makes the chip element-level format-agnostic: apply
 E4M3 scales per 16-element block (+ FP32 tensor scale) for **NVFP4**
 semantics, or E8M0 power-of-two scales per 32-element block for **MXFP4**.
@@ -29,7 +29,7 @@ Architecture, SPI protocol, and skewed-wavefront control follow the proven
 reference mini-TPU
 ([MILOUDIAS/IEEE_ttsky_mini_tpu_spi](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi)):
 activations flow right, weights flow down, both streams change every cycle
-(real dot products), and a full matmul runs in a 7-cycle wavefront. An
+(real dot products), and a full matmul runs in a 10-cycle wavefront. An
 optional ReLU (flag in the RUN instruction) clamps negative results at
 readout.
 
@@ -37,9 +37,9 @@ readout.
 
 | Instruction | Format (binary)        | Description |
 |-------------|------------------------|-------------|
-| `LOAD A`    | `10 0 rr 0ee 000000tt` | Ternary activation `t` (00=0, 01=+1, 10=-1) into row `r` (0-2), element `e` (0-2) |
-| `LOAD B`    | `10 1 cc 0kk 0000wwww` | E2M1 weight nibble into column `c` (0-2), step `k` (0-2) |
-| `RUN`       | `01 r 0000000000000`   | Clear accumulators, run the wavefront (7 cycles); `r`=1 applies ReLU at readout |
+| `LOAD A`    | `10 0 rr 0ee 000000tt` | Ternary activation `t` (00=0, 01=+1, 10=-1) into row `r` (0-3), element `e` (0-3) |
+| `LOAD B`    | `10 1 cc 0kk 0000wwww` | E2M1 weight nibble into column `c` (0-3), step `k` (0-3) |
+| `RUN`       | `01 r 0000000000000`   | Clear accumulators, run the wavefront (10 cycles); `r`=1 applies ReLU at readout |
 | `STORE`     | `11 0 rr cc 000000000` | Drive C[r][c] (sign-extended byte) on `uo_out` |
 
 After power-up, issue one throwaway RUN before the first real matmul: the
@@ -48,9 +48,9 @@ reference) and hold random values until a wavefront flushes them.
 
 SCLK must be at most clk/6 (the SPI bit counter crosses clock domains
 unsynchronised, as in the reference). The `ready` pin (uio[1]) pulses when a
-RUN completes; alternatively just wait 7+ clock cycles. The SPI is
+RUN completes; alternatively just wait 10+ clock cycles. The SPI is
 receive-only: all results are read via STORE on `uo_out` (the reference's
-MISO readback stream is omitted to save area on the 1x1 tile).
+MISO readback stream is omitted to save area).
 
 ### E2M1 weight encoding (element type of NVFP4 and MXFP4)
 
