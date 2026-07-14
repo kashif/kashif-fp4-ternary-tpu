@@ -188,7 +188,35 @@ DESIGN_NOTES.md           # Int7+1 structured sparsity idea
 info.yaml                 # TT metadata: 1x1 tile, 50MHz, SKY130A
 ```
 
-## 8. References
+## 8. Design Rationale (from Roune's document)
+
+Key principles from Roune's "Designing AI Chip Software and Hardware" (2026)
+that validate our design choices:
+
+- **"FP4 for activations is very challenging"** (Numerics section): We use
+  ternary {-1, 0, +1} activations instead of FP4 — avoiding the challenge
+  while keeping activations ultra-low-precision.
+
+- **"Integer summation is cheaper than FP summation"** (Numerics nerd box):
+  Our 10-bit signed integer accumulator is cheaper than FP32 accumulation.
+  Roune notes: "The product of two FP4's can be represented in an int8 using
+  fixed point. So it might actually be cheaper and also more accurate to sum
+  FP4 products in integer values instead of floating point."
+
+- **"8 bits is always sufficient for inference"** (Numerics section): Our
+  E2M1 weights are 4-bit and ternary activations are 2-bit — well within
+  the sufficient range when combined with block-scale dequantization.
+
+- **"Systolic array numerics do not need to be the same as scalar and vector
+  numerics"** (Numerics section): Our ASIC uses E2M1+ternary while the host
+  RP2040 applies E4M3/FP32 scales in software — exactly the split Roune
+  recommends.
+
+- **"Not all systolic arrays are made equal"** (Numerics section): By
+  eliminating the hardware multiplier entirely (ternary activations), our
+  PEs are ~3× smaller than INT4 designs, allowing 16 PEs in a 1×1 tile.
+
+## 9. References
 
 - [NVFP4: NVIDIA Blackwell format](https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/)
 - [OCP Microscaling (MX) Formats spec](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf)
