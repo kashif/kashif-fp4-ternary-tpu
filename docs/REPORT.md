@@ -20,7 +20,7 @@ that eliminate the hardware multiplier entirely.
 | Metric | Value |
 |--------|-------|
 | Array size | 4×4 = 16 PEs |
-| Weight format | E2M1 (NVFP4/MXFP4), 4-bit |
+| Weight format | E2M1, 4-bit (element type shared by NVFP4 and MXFP4; they differ in host-side block scaling — NVFP4: 16-elem blocks with E4M3 scales, MXFP4: 32-elem blocks with E8M0) |
 | Activation format | Ternary {-1, 0, +1}, 2-bit |
 | Multiplier | None (MUX-add) |
 | FFs per PE | 14 (4-bit weight + 10-bit accumulator) |
