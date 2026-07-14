@@ -6,8 +6,8 @@
  * 4x4 E2M1 (NVFP4) weight matrix, in the x2 integer domain. Results
  * are exact 7-bit signed values (max |C| = 48), read out one byte at
  * a time via STORE. K = 4 divides the NVFP4 16-element block exactly
- * (4 tiles per block). Activation functions (ReLU etc.) are host-side
- * by design — they are only correct after cross-tile accumulation.
+ * (4 tiles per block). Activation functions are host-side by design —
+ * they are only correct after cross-tile accumulation.
  */
 
 `default_nettype none

@@ -31,10 +31,8 @@ reference mini-TPU
 activations flow right, weights flow down, both streams change every cycle
 (real dot products), and a full matmul runs in a 10-cycle wavefront.
 
-There is deliberately no ReLU (or any activation-function) instruction:
-activation functions are only correct after cross-tile partial-sum
-accumulation and bias, which happen on the host — so that is where ReLU
-lives (one max(0, x) on the RP2040).
+Activation functions are host-side: they are only correct after cross-tile
+partial-sum accumulation and bias, which happen on the host anyway.
 
 ### Second mode: ternary/binary weights x INT4 activations (Bonsai-style)
 

@@ -61,9 +61,8 @@ The RUN flag selects how the 4-bit value operand decodes:
 The dot product is symmetric, so mode 1 just swaps operand roles — no wider
 pipes, one extra 7-bit mux per PE. Mode 1's 2-bit ternary weight codes match
 the deployed Bonsai ternary packing (2-bit slots); binary weights are the
-subset that never uses the zero code. There is deliberately no ReLU
-instruction — activation functions are only correct on the host, after
-cross-tile accumulation and bias.
+subset that never uses the zero code. Activation functions are host-side —
+they are only correct after cross-tile accumulation and bias.
 
 ### A real systolic matmul
 

@@ -16,9 +16,8 @@
  *          INT4 two's complement (Bonsai-style ternary weights in
  *          memory A steering INT4 activations in memory B). Clears
  *          accumulators, streams the skewed wavefront for 10 cycles.
- *          Note: there is no ReLU instruction by design — activation
- *          functions belong on the host, after cross-tile partial-sum
- *          accumulation and bias, where they are always correct.
+ *          Activation functions belong on the host, after cross-tile
+ *          partial-sum accumulation and bias.
  *
  *   STORE: [12:11] row, [10:9] col
  *          Latches the selection; result output holds until next STORE.
