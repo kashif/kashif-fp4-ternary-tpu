@@ -109,6 +109,13 @@ async def hw_reset(dut):
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 5)
+    if GL_TEST:
+        # gl_preheat (reference REPORT.md pattern): the PE pipeline
+        # regs are no-reset dfxtp cells and power up X in gate-level
+        # sim. A zero-operand RUN flushes them before real stimulus.
+        zero = [[0] * N for _ in range(N)]
+        await load_operands(dut, zero, zero)
+        await spi_send(dut, instr_run())
 
 
 # ----------------------------------------------------------------------

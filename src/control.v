@@ -62,8 +62,11 @@ module control (
     wire [1:0] opcode     = instruction[15:14];
     wire       mem_select = instruction[13];
     wire [1:0] line       = instruction[12:11];
-    wire [2:0] elem       = instruction[10:8];
-    wire [7:0] imm        = instruction[7:0];
+    wire [1:0] elem       = instruction[9:8];
+    wire [3:0] imm        = instruction[3:0];
+
+    // Bits reserved by the shared ISA layout but unused in this design
+    wire _unused_instr = &{instruction[10], instruction[7:4], 1'b0};
 
     wire is_load  = (opcode == LOAD);
     wire is_store = (opcode == STORE);
@@ -122,12 +125,12 @@ module control (
     assign mema_data_in      = imm[1:0];
     assign mema_write_enable = load_a;
     assign mema_write_line   = line;
-    assign mema_write_elem   = elem[1:0];
+    assign mema_write_elem   = elem;
 
-    assign memb_data_in      = imm[3:0];
+    assign memb_data_in      = imm;
     assign memb_write_enable = load_b;
     assign memb_write_line   = line;
-    assign memb_write_elem   = elem[1:0];
+    assign memb_write_elem   = elem;
 
     // ------------------------------------------------------------------
     // STORE: latch result selection so uo_out holds a stable value

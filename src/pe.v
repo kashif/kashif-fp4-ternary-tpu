@@ -13,8 +13,9 @@
  *
  * K = 3 contraction: max |acc| = 3 * 12 = 36, exact in 7-bit signed.
  *
- * All flops have async reset (dfrtp) — avoids the gate-level
- * X-poisoning documented in the reference REPORT.md.
+ * Accumulators have async reset; pipeline regs are no-reset dfxtp
+ * (area — reference pattern). Gate-level X from the no-reset regs is
+ * flushed by a zero-operand preheat RUN in the GL testbench.
  */
 
 `default_nettype none
@@ -31,9 +32,20 @@ module pe (
     output wire [6:0] c_out    // accumulated result
 );
 
+    // Pipeline regs without reset (smaller dfxtp cells, reference
+    // pattern). The sim-only initial keeps them 0 in RTL simulation;
+    // gate-level tests flush power-up X with a zero-operand preheat
+    // RUN (see test.py gl_preheat / reference REPORT.md).
     reg [1:0] a_reg;
     reg [3:0] b_reg;
     reg signed [6:0] c_reg;
+
+`ifndef SYNTHESIS
+    initial begin
+        a_reg = 2'd0;
+        b_reg = 4'd0;
+    end
+`endif
 
     // E2M1 magnitude decode (x2 integer domain)
     wire [3:0] w_mag = b_in[2:0] == 3'b000 ? 4'd0  :
@@ -52,19 +64,18 @@ module pe (
                              (a_in == 2'b10) ? -w_val : 7'sd0;
 
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            a_reg <= 2'd0;
-            b_reg <= 4'd0;
+        if (!rst_n)
             c_reg <= 7'sd0;
-        end else begin
-            if (clr)
-                c_reg <= 7'sd0;
-            else if (we)
-                c_reg <= c_reg + prod;
-            if (we) begin
-                a_reg <= a_in;
-                b_reg <= b_in;
-            end
+        else if (clr)
+            c_reg <= 7'sd0;
+        else if (we)
+            c_reg <= c_reg + prod;
+    end
+
+    always @(posedge clk) begin
+        if (we) begin
+            a_reg <= a_in;
+            b_reg <= b_in;
         end
     end
 

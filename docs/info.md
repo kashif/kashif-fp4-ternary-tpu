@@ -42,6 +42,10 @@ readout.
 | `RUN`       | `01 r 0000000000000`   | Clear accumulators, run the wavefront (7 cycles); `r`=1 applies ReLU at readout |
 | `STORE`     | `11 0 rr cc 000000000` | Drive C[r][c] (sign-extended byte) on `uo_out` |
 
+After power-up, issue one throwaway RUN before the first real matmul: the
+PE pipeline registers are no-reset cells (area optimization from the
+reference) and hold random values until a wavefront flushes them.
+
 SCLK must be at most clk/6 (the SPI bit counter crosses clock domains
 unsynchronised, as in the reference). The `ready` pin (uio[1]) pulses when a
 RUN completes; alternatively just wait 7+ clock cycles. The SPI is

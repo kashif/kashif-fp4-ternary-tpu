@@ -54,24 +54,24 @@ module tt_um_kashif_fp4_ternary_tpu (
         .data_buffer_output (instruction)
     );
 
-    // Drive uio_oe/uio_out through (* keep *) flip-flops instead of
-    // constants: direct constant assigns synthesize to conb cells whose
-    // pulldown nets magic merges with VGND during extraction, producing
-    // LVS mismatches (reference REPORT.md). uio[1] = ready out,
+    // Constant pins are driven from two shared (* keep *) flip-flops
+    // instead of per-pin registers or direct constants: constants
+    // synthesize to conb cells whose pulldown nets magic merges with
+    // VGND during extraction, producing LVS mismatches (reference
+    // REPORT.md), and per-pin FFs waste 13 flops. uio[1] = ready out,
     // everything else stays an input (oe 0).
-    (* keep = "true" *) reg [7:0] uio_oe_q;
-    (* keep = "true" *) reg [6:0] uio_out_low_q;
+    (* keep = "true" *) reg const0_q, const1_q;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            uio_oe_q      <= 8'b0;
-            uio_out_low_q <= 7'b0;
+            const0_q <= 1'b0;
+            const1_q <= 1'b0;
         end else begin
-            uio_oe_q      <= 8'b0000_0010;
-            uio_out_low_q <= 7'b0;
+            const0_q <= 1'b0;
+            const1_q <= 1'b1;
         end
     end
-    assign uio_oe  = uio_oe_q;
-    assign uio_out = {uio_out_low_q[6:1], ready_to_send, uio_out_low_q[0]};
+    assign uio_oe  = {{6{const0_q}}, const1_q, const0_q};
+    assign uio_out = {{6{const0_q}}, ready_to_send, const0_q};
 
     wire _unused = &{ena, ui_in[7:3], uio_in, 1'b0};
 
