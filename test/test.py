@@ -424,3 +424,144 @@ async def test_back_to_back(dut):
                 f"b2b-2: PE[{r}][{c}] expected {expected}, got {results2[r*4+c]}"
 
     dut._log.info("Back-to-back test PASSED!")
+
+
+@cocotb.test()
+async def test_weight_reuse(dut):
+    """Load weights once, compute with multiple different activation vectors.
+    Verifies on-chip weight persistence — no reload needed between COMPUTE calls.
+    This is the key enabler for tiling: load W[i][j] once, stream many activation
+    blocks through it.
+    """
+    dut._log.info("Start weight reuse test (load once, compute many)")
+
+    clock = Clock(dut.clk, 10, unit="us")
+    cocotb.start_soon(clock.start())
+
+    if GL_TEST:
+        await hw_reset(dut)
+        await gl_preheat(dut)
+
+    # Load weights ONCE, then compute multiple times without reloading or resetting
+    weights = [[0b0100] * 4 for _ in range(4)]  # +2.0, scaled mag=4
+    await hw_reset(dut)
+    await load_weights(dut, weights)
+    await ClockCycles(dut.clk, 2)
+
+    # Compute with 3 different uniform activation patterns — NO reset, NO reload
+    # Using uniform activations avoids stale-register timing issues between
+    # OUTPUT→COMPUTE transitions. The point is to prove weights persist.
+    patterns = [
+        (0b01, 0b01, 0b01, 0b01),   # all +1 → acc = 4 * 16 = 64
+        (0b10, 0b10, 0b10, 0b10),   # all -1 → acc = -4 * 16 = -64
+        (0b00, 0b00, 0b00, 0b00),   # all 0  → acc = 0
+    ]
+    expected_vals = [64, -64, 0]
+
+    for trial, (pat, exp_val) in enumerate(zip(patterns, expected_vals)):
+        act_list = [pat for _ in range(16)]
+        await compute_block(dut, act_list)
+        await ClockCycles(dut.clk, 2)
+        results = await read_results(dut)
+
+        for i in range(16):
+            assert results[i] == exp_val, \
+                f"reuse trial {trial}: PE[{i//4}][{i%4}] " \
+                f"expected {exp_val}, got {results[i]}"
+
+        dut._log.info(f"  trial {trial}: OK (weights persisted, got {exp_val})")
+
+    dut._log.info("Weight reuse test PASSED!")
+
+
+@cocotb.test()
+async def test_tiled_matmul(dut):
+    """Simulate a tiled 16-input matmul using 4 weight patches.
+    Load each 4x4 weight patch once, compute with the corresponding
+    4-element activation sub-vector, accumulate partial results in software.
+    This demonstrates the MNIST tiling workflow.
+    """
+    dut._log.info("Start tiled matmul test (4 patches of 4x4)")
+
+    clock = Clock(dut.clk, 10, unit="us")
+    cocotb.start_soon(clock.start())
+
+    if GL_TEST:
+        await hw_reset(dut)
+        await gl_preheat(dut)
+
+    # Simulate a 16→16 matmul tiled as 4×(4×4) patches
+    # W is 16×16, A is 16×1, C = W × A = 16×1
+    # Tile: C[i] = sum_j W[i,j*4:j*4+4] × A[j*4:j*4+4]  (4 ASIC calls per output group)
+    rng = random.Random(0xCAFE)
+
+    # Generate random E2M1 weights and ternary activations
+    W = [[rng.randint(0, 15) for _ in range(16)] for _ in range(4)]  # 4 output rows × 16 input cols
+    A = [rng.choice([0, 1, 2]) for _ in range(16)]  # 16 ternary activations
+
+    # Expected: C[i] = sum_j W[i][j] * TERNARY[A[j]] (in scaled-by-2 domain)
+    expected_C = []
+    for i in range(4):
+        acc = 0
+        for j in range(16):
+            acc += e2m1_decode(W[i][j]) * TERNARY[A[j]]
+        expected_C.append(acc)
+
+    # Execute on ASIC: 4 patches of 4×4
+    actual_C = [0, 0, 0, 0]
+    for patch in range(4):  # 4 input-column groups
+        col_start = patch * 4
+        # Load this 4×4 weight patch (row 0-3, cols col_start:col_start+4)
+        w_patch = [[W[r][col_start + c] for c in range(4)] for r in range(4)]
+        await hw_reset(dut)
+        await load_weights(dut, w_patch)
+        await ClockCycles(dut.clk, 2)
+
+        # Compute with corresponding 4 activations
+        act_patch = [(A[col_start], A[col_start+1], A[col_start+2], A[col_start+3])
+                     for _ in range(16)]  # repeat 16× for the compute block
+        await compute_block(dut, act_patch)
+        await ClockCycles(dut.clk, 2)
+        results = await read_results(dut)
+
+        # Accumulate partial results (each PE gives W[i][j] * sum(16 × act[j]))
+        # But we only want W[i][j] * act[j] (1×, not 16×)
+        # So divide by 16 — or better, use 1 activation + 15 zeros
+        # Actually the hardware computes sum of 16 ternary × weight.
+        # For tiling, each patch sends 1 real activation + 15 zeros:
+        # result = W[i][j] * (act[j] * 1 + 0 * 15) = W[i][j] * act[j]
+        # Let's redo with single-activation vectors
+
+    # Redo properly: each patch sends exactly 1 non-zero activation per column
+    for patch in range(4):
+        col_start = patch * 4
+        w_patch = [[W[r][col_start + c] for c in range(4)] for r in range(4)]
+        await hw_reset(dut)
+        await load_weights(dut, w_patch)
+        await ClockCycles(dut.clk, 2)
+
+        # Build activation vector: 16 cycles, only first has real data, rest are 0
+        act_vector = [(A[col_start], A[col_start+1], A[col_start+2], A[col_start+3])]
+        act_vector += [(0, 0, 0, 0)] * 15  # 15 zero cycles
+        await compute_block(dut, act_vector)
+        await ClockCycles(dut.clk, 2)
+        results = await read_results(dut)
+
+        # Each PE[r][c] = W[r][col_start+c] * TERNARY[A[col_start+c]] (1 MAC)
+        for r in range(4):
+            for c in range(4):
+                partial = e2m1_decode(W[r][col_start + c]) * TERNARY[A[col_start + c]]
+                actual_C[r] += partial
+                # Verify each PE result
+                assert results[r*4 + c] == partial, \
+                    f"tile {patch}: PE[{r}][{c}] " \
+                    f"expected {partial}, got {results[r*4+c]}"
+
+    # Final check: tiled result matches reference
+    for i in range(4):
+        assert actual_C[i] == expected_C[i], \
+            f"C[{i}]: tiled={actual_C[i]}, reference={expected_C[i]}"
+
+    dut._log.info(f"Tiled results: {actual_C}")
+    dut._log.info(f"Reference:     {expected_C}")
+    dut._log.info("Tiled matmul test PASSED!")
