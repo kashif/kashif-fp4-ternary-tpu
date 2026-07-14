@@ -25,7 +25,7 @@
           <mxGeometry x="700" y="120" width="190" height="80" as="geometry" />
         </mxCell>
 
-        <mxCell id="memb" value="Memory B (weights)&#10;4 cols x 4 E2M1 nibbles&#10;(NVFP4/MXFP4 element type)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+        <mxCell id="memb" value="Memory B (weights)&#10;4 cols x 4 value nibbles&#10;(E2M1 mode 0 / INT4 mode 1)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
           <mxGeometry x="700" y="430" width="190" height="80" as="geometry" />
         </mxCell>
 
@@ -56,7 +56,7 @@
         <mxCell id="e5" value="a_in: 4 x ternary (8b)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="mema" target="array">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e6" value="b_in: 4 x E2M1 (16b)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="memb" target="array">
+        <mxCell id="e6" value="b_in: 4 x value nibble (16b)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="memb" target="array">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e7" value="we / clr" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="ctrl" target="array">

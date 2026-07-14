@@ -76,10 +76,10 @@
         <mxCell id="pd1" value="a_in[1:0] = ternary code&#10;00=0, 01=+1, 10=-1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
           <mxGeometry x="1010" y="240" width="240" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="pd2" value="b_in[3:0] = E2M1 {sign, exp, mant}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+        <mxCell id="pd2" value="b_in[3:0] = value nibble (E2M1 or INT4)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="1010" y="300" width="240" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="pd3" value="E2M1 decode LUT (x2 domain)&#10;0,1,2,3,4,6,8,12 with sign" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+        <mxCell id="pd3" value="value decode by RUN mode:&#10;E2M1 LUT (0,1,2,3,4,6,8,12, sign)&#10;or INT4 twoE2M1 decode LUT (x2 domain)&#10;0,1,2,3,4,6,8,12 with sign#39;s complement" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
           <mxGeometry x="1010" y="350" width="240" height="50" as="geometry" />
         </mxCell>
         <mxCell id="pd4" value="mux-add: +w / -w / 0&#10;(no multiplier)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
