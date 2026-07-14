@@ -6,12 +6,19 @@
  * weights flow down; both streams change every cycle — real dot
  * products, accumulated in place).
  *
- * Weight: E2M1 4-bit {sign, exp[1:0], mant}, decoded to the x2 integer
- * domain: 0,1,2,3,4,6,8,12 with sign. Activation: ternary 2-bit
- * (00=0, 01=+1, 10=-1, 11 reserved=0). The "multiply" is a mux-add:
+ * Two value formats for the b operand, selected per-RUN by `int4`:
+ *   mode 0 (NVFP4): E2M1 {sign, exp[1:0], mant} decoded to the x2
+ *     integer domain 0,1,2,3,4,6,8,12 with sign — E2M1 weights
+ *     steered by ternary activations.
+ *   mode 1 (Bonsai/BitNet-style): plain INT4 two's complement —
+ *     INT4 activations steered by ternary (or binary) weights, with
+ *     FP16 group scales applied by the host.
+ * The a operand is always ternary 2-bit (00=0, 01=+1, 10=-1,
+ * 11 reserved=0). The "multiply" is a mux-add either way:
  *   +1 -> acc += w,  -1 -> acc -= w,  0 -> acc unchanged.
  *
- * K = 4 contraction: max |acc| = 4 * 12 = 48, exact in 7-bit signed.
+ * K = 4 contraction: max |acc| = 48 (mode 0) / 32 (mode 1),
+ * exact in 7-bit signed.
  *
  * Accumulators have async reset; pipeline regs are no-reset dfxtp
  * (area — reference pattern). Gate-level X from the no-reset regs is
@@ -25,10 +32,11 @@ module pe (
     input  wire       rst_n,
     input  wire       we,      // shift pipes + accumulate
     input  wire       clr,     // clear accumulator (start of RUN)
-    input  wire [1:0] a_in,    // ternary activation
-    input  wire [3:0] b_in,    // E2M1 weight {sign, exp[1:0], mant}
-    output wire [1:0] a_out,   // activation passed right
-    output wire [3:0] b_out,   // weight passed down
+    input  wire       int4,    // b_in decode: 0 = E2M1, 1 = INT4 two's complement
+    input  wire [1:0] a_in,    // ternary operand
+    input  wire [3:0] b_in,    // value operand (E2M1 or INT4)
+    output wire [1:0] a_out,   // ternary passed right
+    output wire [3:0] b_out,   // value passed down
     output wire [6:0] c_out    // accumulated result
 );
 
@@ -56,8 +64,14 @@ module pe (
                        b_in[2:0] == 3'b101 ? 4'd6  :
                        b_in[2:0] == 3'b110 ? 4'd8  : 4'd12;
 
-    wire signed [6:0] w_val = b_in[3] ? -$signed({3'b0, w_mag})
+    wire signed [6:0] w_fp4 = b_in[3] ? -$signed({3'b0, w_mag})
                                       :  $signed({3'b0, w_mag});
+
+    // INT4 two's-complement decode (mode 1: Bonsai-style ternary weights
+    // in the a pipe steering INT4 activations in the b pipe)
+    wire signed [6:0] w_int4 = {{3{b_in[3]}}, b_in};
+
+    wire signed [6:0] w_val = int4 ? w_int4 : w_fp4;
 
     // Ternary mux-add: no multiplier anywhere
     wire signed [6:0] prod = (a_in == 2'b01) ?  w_val :

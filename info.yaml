@@ -4,7 +4,7 @@ project:
   title:        "NVFP4 Ternary Mini-TPU"
   author:       "Kashif"
   discord:      ""
-  description:  "4x4 systolic array computing C = A x W with NVFP4 (E2M1) 4-bit weights and ternary {-1,0,+1} activations. The multiply is a mux-add — no hardware multiplier anywhere. SPI instruction interface, optional ReLU, exact 7-bit results. K=4 divides the NVFP4 16-element block exactly."
+  description:  "4x4 systolic array computing C = A x W with NVFP4 (E2M1) 4-bit weights and ternary {-1,0,+1} activations. The multiply is a mux-add — no hardware multiplier anywhere. SPI instruction interface, exact 7-bit results, and a second mode: ternary/binary weights x INT4 activations (Bonsai/BitNet-style). K=4 divides the NVFP4 16-element block exactly."
   language:     "Verilog"
   clock_hz:     5000000
 

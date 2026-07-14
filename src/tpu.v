@@ -5,8 +5,9 @@
  * Computes C = A x W with A a 4x4 ternary activation matrix and W a
  * 4x4 E2M1 (NVFP4) weight matrix, in the x2 integer domain. Results
  * are exact 7-bit signed values (max |C| = 48), read out one byte at
- * a time via STORE, with optional ReLU latched at RUN. K = 4 divides
- * the NVFP4 16-element block exactly (4 tiles per block).
+ * a time via STORE. K = 4 divides the NVFP4 16-element block exactly
+ * (4 tiles per block). Activation functions (ReLU etc.) are host-side
+ * by design — they are only correct after cross-tile accumulation.
  */
 
 `default_nettype none
@@ -24,7 +25,7 @@ module tpu (
 
     wire        array_write_enable;
     wire        array_clear;
-    wire        relu_en_latched;
+    wire        int4_mode;
     wire [1:0]  store_row, store_col;
 
     wire [1:0]  mema_data_in;
@@ -50,7 +51,7 @@ module tpu (
         .instruction        (instruction),
         .array_write_enable (array_write_enable),
         .array_clear        (array_clear),
-        .relu_en_latched    (relu_en_latched),
+        .int4_mode          (int4_mode),
         .store_row          (store_row),
         .store_col          (store_col),
         .mema_data_in       (mema_data_in),
@@ -95,6 +96,7 @@ module tpu (
         .rst_n    (rst_n),
         .we       (array_write_enable),
         .clr      (array_clear),
+        .int4     (int4_mode),
         .a_in     (array_a_in),
         .b_in     (array_b_in),
         .data_out (array_data_out)
@@ -102,7 +104,7 @@ module tpu (
 
     // ------------------------------------------------------------------
     // Result readout: STORE latches {row, col}; the selected accumulator
-    // (optionally ReLU'd) drives `result` until the next STORE.
+    // drives `result` until the next STORE.
     // ------------------------------------------------------------------
     wire [6:0] acc [0:15];
     genvar i;
@@ -116,9 +118,7 @@ module tpu (
     wire [3:0] sel_idx = {store_row, store_col};
     wire [6:0] selected = acc[sel_idx];
 
-    wire [6:0] relued = (relu_en_latched && selected[6]) ? 7'd0 : selected;
-
     // Sign-extend the 7-bit accumulator to the 8-bit result port
-    assign result = {relued[6], relued};
+    assign result = {selected[6], selected};
 
 endmodule

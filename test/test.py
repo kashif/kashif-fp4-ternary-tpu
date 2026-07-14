@@ -57,8 +57,8 @@ def instr_load_b(col, k, nibble):
     return (OP_LOAD << 14) | (1 << 13) | (col << 11) | (k << 8) | (nibble & 0xF)
 
 
-def instr_run(relu=0):
-    return (OP_RUN << 14) | (relu << 13)
+def instr_run(int4=0):
+    return (OP_RUN << 14) | (int4 << 13)
 
 
 def instr_store(row, col):
@@ -69,15 +69,18 @@ def instr_store(row, col):
 # Golden model
 # ----------------------------------------------------------------------
 
-def golden_matmul(A, wnibbles, relu=0):
-    """C = A (4x4 ternary) x W (4x4 E2M1, x2 integer domain).
-    wnibbles[col][k] mirrors the LOAD B addressing. Max |C| = 48."""
-    C = [[0] * N for _ in range(N)]
-    for i in range(N):
-        for c in range(N):
-            s = sum(A[i][k] * e2m1_decode(wnibbles[c][k]) for k in range(N))
-            C[i][c] = max(s, 0) if relu else s
-    return C
+def s4(nibble):
+    """INT4 two's complement decode (mode 1)."""
+    return nibble - 16 if nibble & 0x8 else nibble
+
+
+def golden_matmul(A, wnibbles, int4=0):
+    """C = A (4x4 ternary) x B (4x4 values). Mode 0: B nibbles are E2M1
+    (max |C| = 48); mode 1: B nibbles are INT4 (max |C| = 32).
+    wnibbles[col][k] mirrors the LOAD B addressing."""
+    dec = s4 if int4 else e2m1_decode
+    return [[sum(A[i][k] * dec(wnibbles[c][k]) for k in range(N))
+             for c in range(N)] for i in range(N)]
 
 
 # ----------------------------------------------------------------------
@@ -139,9 +142,9 @@ async def read_result(dut, row, col):
     return val
 
 
-async def run_matmul(dut, A, wnibbles, relu=0):
+async def run_matmul(dut, A, wnibbles, int4=0):
     await load_operands(dut, A, wnibbles)
-    await spi_send(dut, instr_run(relu))
+    await spi_send(dut, instr_run(int4))
     return [[await read_result(dut, i, c) for c in range(N)] for i in range(N)]
 
 
@@ -209,23 +212,36 @@ async def test_ternary_semantics(dut):
 
 
 @cocotb.test()
-async def test_relu(dut):
-    """RUN with relu=1 clamps negative results to zero; relu=0 does not."""
+async def test_int4_mode(dut):
+    """RUN with int4=1 decodes memory B as INT4 two's complement
+    (Bonsai-style: ternary weights in A steer INT4 activations in B).
+    Nibbles chosen to discriminate the decoders: 0x8 is -0 (=0) in E2M1
+    but -8 in INT4; 0xF is -12 in E2M1 but -1 in INT4.
+    """
     start_clock(dut)
     await hw_reset(dut)
 
-    A = [[1, 1, 1, 1]] * N
-    wn = [[0x9, 0x9, 0x9, 0x9],   # col 0: sum = -4
-          [0x1, 0x1, 0x1, 0x1],   # col 1: sum = +4
-          [0xF, 0x0, 0x0, 0x0],   # col 2: sum = -12
-          [0x7, 0xF, 0x0, 0x0]]   # col 3: sum = 0
+    A = [[1, -1, 1, 0],
+         [-1, 1, 0, 1],
+         [1, 1, -1, -1],
+         [0, -1, -1, 1]]
+    wn = [[0x8, 0xF, 0x7, 0x1],
+          [0x5, 0x8, 0xA, 0xF],
+          [0xF, 0x7, 0x8, 0x3],
+          [0x2, 0xB, 0x4, 0x8]]
 
-    plain = await run_matmul(dut, A, wn, relu=0)
-    check(dut, plain, golden_matmul(A, wn, relu=0), "no-relu")
+    fp4 = await run_matmul(dut, A, wn, int4=0)
+    check(dut, fp4, golden_matmul(A, wn, int4=0), "e2m1-mode")
 
-    clamped = await run_matmul(dut, A, wn, relu=1)
-    check(dut, clamped, golden_matmul(A, wn, relu=1), "relu")
-    dut._log.info("relu PASSED")
+    raw = await run_matmul(dut, A, wn, int4=1)
+    check(dut, raw, golden_matmul(A, wn, int4=1), "int4-mode")
+
+    assert fp4 != raw, "modes produced identical results — decoder mux inert"
+
+    # Mode is latched per RUN, not sticky
+    back = await run_matmul(dut, A, wn, int4=0)
+    check(dut, back, golden_matmul(A, wn, int4=0), "back-to-e2m1")
+    dut._log.info("int4 mode PASSED")
 
 
 @cocotb.test()
@@ -299,9 +315,9 @@ async def test_random(dut):
     for t in range(trials):
         A = [[rand_ternary(rng) for _ in range(N)] for _ in range(N)]
         wn = [[rng.randint(0, 15) for _ in range(N)] for _ in range(N)]
-        relu = rng.randint(0, 1)
-        results = await run_matmul(dut, A, wn, relu=relu)
-        check(dut, results, golden_matmul(A, wn, relu=relu), f"trial {t}")
-        dut._log.info(f"trial {t} OK (relu={relu})")
+        int4 = rng.randint(0, 1)
+        results = await run_matmul(dut, A, wn, int4=int4)
+        check(dut, results, golden_matmul(A, wn, int4=int4), f"trial {t}")
+        dut._log.info(f"trial {t} OK (int4={int4})")
 
     dut._log.info(f"random test PASSED ({trials} trials)")

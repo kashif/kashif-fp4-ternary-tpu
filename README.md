@@ -49,6 +49,22 @@ the accumulators are exact, the host can apply per-block scales to bit-exact
 partial sums (a K=16 NVFP4 block is exactly four K=4 tiles) with no
 accumulated rounding from the hardware.
 
+### Two low-bit recipes in one chip
+
+The RUN flag selects how the 4-bit value operand decodes:
+
+| Mode | Memory A (2-bit) | Memory B (4-bit) | Recipe |
+|------|------------------|------------------|--------|
+| `m=0` | ternary activations | E2M1 weights | NVFP4/MXFP4 weights (host block scales) |
+| `m=1` | ternary/binary weights | INT4 activations | Bonsai/BitNet-style (host FP16 group scales) |
+
+The dot product is symmetric, so mode 1 just swaps operand roles — no wider
+pipes, one extra 7-bit mux per PE. Mode 1's 2-bit ternary weight codes match
+the deployed Bonsai ternary packing (2-bit slots); binary weights are the
+subset that never uses the zero code. There is deliberately no ReLU
+instruction — activation functions are only correct on the host, after
+cross-tile accumulation and bias.
+
 ### A real systolic matmul
 
 The architecture is the silicon-proven
@@ -77,7 +93,7 @@ A row 3 --> [PE 30] -> [PE 31] -> [PE 32] -> [PE 33]
 |-------------|------------------------|-------------|
 | `LOAD A`    | `10 0 rr 0ee 000000tt` | Ternary activation into row `r`, element `e` |
 | `LOAD B`    | `10 1 cc 0kk 0000wwww` | E2M1 nibble into column `c`, step `k` |
-| `RUN`       | `01 r 0000000000000`   | Clear accumulators, run 10 cycles; `r`=1 = ReLU |
+| `RUN`       | `01 m 0000000000000`   | Clear accumulators, run 10 cycles; `m`=0 E2M1 weights, `m`=1 INT4 mode (Bonsai) |
 | `STORE`     | `11 0 rr cc 000000000` | C[r][c] as sign-extended byte on `uo_out` |
 
 Pins: `ui[0]`=MOSI, `ui[1]`=CS, `ui[2]`=SCLK; `uo_out`=result byte;
@@ -89,7 +105,7 @@ Pins: `ui[0]`=MOSI, `ui[1]`=CS, `ui[2]`=SCLK; `uo_out`=result byte;
 ```
 src/
   project.v     # Top-level TT module (tt_um_kashif_fp4_ternary_tpu)
-  tpu.v         # Core: control + memories + array + result mux (ReLU)
+  tpu.v         # Core: control + memories + array + result mux
   spi.v         # SPI instruction receiver, 16-bit, receive-only
   control.v     # LOAD/RUN/STORE decode, skewed wavefront counter
   memory_a.v    # Activations: 4x4 ternary (2-bit)
@@ -112,11 +128,11 @@ info.yaml       # TT metadata: 1x2 tile, 5 MHz, SKY130A
 |------|-------------|
 | `test_known_matmul` | Hand-checked matmul, mixed E2M1 values |
 | `test_ternary_semantics` | +1 adds, -1 subtracts, 0 skips |
-| `test_relu` | ReLU flag clamps negatives; off passes them |
+| `test_int4_mode` | INT4 decode mode incl. discriminator nibbles (0x8: -0 vs -8), mode latching |
 | `test_not_degenerate` | Equal-sum activations must differ (guards against w*sum collapse) |
 | `test_run_clears_accumulators` | Back-to-back RUNs don't double |
 | `test_negative_zero` | E2M1 -0 behaves as exact zero |
-| `test_random` | 12 randomized full-coverage trials (random ReLU) |
+| `test_random` | 12 randomized full-coverage trials (random mode) |
 
 ## Target
 

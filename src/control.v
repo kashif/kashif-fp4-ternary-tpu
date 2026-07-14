@@ -11,8 +11,14 @@
  *          [9:8]   elem  (element / contraction step 0-3)
  *          [7:0]   imm   (A: ternary in imm[1:0], B: E2M1 in imm[3:0])
  *
- *   RUN:   [13] relu_en. Clears accumulators, streams the skewed
- *          wavefront for 10 cycles (N = K = 4 contraction).
+ *   RUN:   [13] int4_mode: 0 = memory B nibbles decode as E2M1
+ *          (NVFP4 weights x ternary activations), 1 = they decode as
+ *          INT4 two's complement (Bonsai-style ternary weights in
+ *          memory A steering INT4 activations in memory B). Clears
+ *          accumulators, streams the skewed wavefront for 10 cycles.
+ *          Note: there is no ReLU instruction by design — activation
+ *          functions belong on the host, after cross-tile partial-sum
+ *          accumulation and bias, where they are always correct.
  *
  *   STORE: [12:11] row, [10:9] col
  *          Latches the selection; result output holds until next STORE.
@@ -31,7 +37,7 @@ module control (
 
     output wire        array_write_enable,
     output wire        array_clear,
-    output reg         relu_en_latched,
+    output reg         int4_mode,
     output reg  [1:0]  store_row,
     output reg  [1:0]  store_col,
 
@@ -73,12 +79,13 @@ module control (
     wire is_store = (opcode == STORE);
     wire is_run   = (opcode == RUN) || (counter > 0);
 
-    // Latch the ReLU flag on each RUN; applied at readout.
+    // Latch the value-operand decode mode on each RUN; stationary
+    // during the wavefront.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)
-            relu_en_latched <= 1'b0;
+            int4_mode <= 1'b0;
         else if (opcode == RUN && counter == 4'd0)
-            relu_en_latched <= instruction[13];
+            int4_mode <= instruction[13];
     end
 
     always @(posedge clk or negedge rst_n) begin

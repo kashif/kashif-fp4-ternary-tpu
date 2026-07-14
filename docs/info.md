@@ -29,9 +29,24 @@ Architecture, SPI protocol, and skewed-wavefront control follow the proven
 reference mini-TPU
 ([MILOUDIAS/IEEE_ttsky_mini_tpu_spi](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi)):
 activations flow right, weights flow down, both streams change every cycle
-(real dot products), and a full matmul runs in a 10-cycle wavefront. An
-optional ReLU (flag in the RUN instruction) clamps negative results at
-readout.
+(real dot products), and a full matmul runs in a 10-cycle wavefront.
+
+There is deliberately no ReLU (or any activation-function) instruction:
+activation functions are only correct after cross-tile partial-sum
+accumulation and bias, which happen on the host — so that is where ReLU
+lives (one max(0, x) on the RP2040).
+
+### Second mode: ternary/binary weights x INT4 activations (Bonsai-style)
+
+The RUN instruction's `m` flag re-interprets the 4-bit memory-B operand as
+plain INT4 two's complement instead of E2M1. Because the systolic dot
+product is symmetric, the host simply swaps operand roles: **ternary (or
+binary) weights** go into memory A — 2-bit codes, byte-compatible with the
+deployed Bonsai ternary layout — and **INT4 activations** into memory B.
+FP16 group scales (e.g. one per 128 weights, as in Bonsai/BitNet-style
+models) are applied by the host to the chip's exact partial sums. Max
+|C| = 32 in this mode, still exact in the 7-bit accumulators. Hardware
+cost: one 7-bit 2:1 mux per PE.
 
 ### Instruction set (16 bits, sent LSB-first over SPI)
 
@@ -39,7 +54,7 @@ readout.
 |-------------|------------------------|-------------|
 | `LOAD A`    | `10 0 rr 0ee 000000tt` | Ternary activation `t` (00=0, 01=+1, 10=-1) into row `r` (0-3), element `e` (0-3) |
 | `LOAD B`    | `10 1 cc 0kk 0000wwww` | E2M1 weight nibble into column `c` (0-3), step `k` (0-3) |
-| `RUN`       | `01 r 0000000000000`   | Clear accumulators, run the wavefront (10 cycles); `r`=1 applies ReLU at readout |
+| `RUN`       | `01 m 0000000000000`   | Clear accumulators, run the wavefront (10 cycles); `m`=0 E2M1 weight decode, `m`=1 INT4 decode (Bonsai mode) |
 | `STORE`     | `11 0 rr cc 000000000` | Drive C[r][c] (sign-extended byte) on `uo_out` |
 
 After power-up, issue one throwaway RUN before the first real matmul: the
@@ -77,7 +92,7 @@ make -B
 The suite drives the SPI interface exactly like an external host and checks
 the full `C = A x W` result against an **independent golden model** (E2M1 and
 ternary decode from first principles, then a plain matrix multiply). It
-includes ternary semantics (+1/-1/0), ReLU on/off, negative-zero handling, a
+includes ternary semantics (+1/-1/0), both decode modes, negative-zero handling, a
 non-degeneracy test (equal-sum activation matrices must produce different
 results), accumulator-clear checks, and randomized full-coverage trials.
 

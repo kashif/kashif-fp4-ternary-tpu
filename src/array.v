@@ -14,9 +14,10 @@ module array (
     input  wire         rst_n,
     input  wire         we,
     input  wire         clr,
+    input  wire         int4,     // value-operand decode mode
 
-    input  wire [7:0]   a_in,     // 4 rows x ternary activation
-    input  wire [15:0]  b_in,     // 4 cols x E2M1 weight
+    input  wire [7:0]   a_in,     // 4 rows x ternary operand
+    input  wire [15:0]  b_in,     // 4 cols x value operand (E2M1/INT4)
     output wire [111:0] data_out  // 16 accumulators x 7 bits, row-major
 );
 
@@ -42,6 +43,7 @@ module array (
                     .rst_n (rst_n),
                     .we    (we),
                     .clr   (clr),
+                    .int4  (int4),
                     .a_in  (a_pipe[row][col]),
                     .b_in  (b_pipe[row][col]),
                     .a_out (a_pipe[row][col+1]),
