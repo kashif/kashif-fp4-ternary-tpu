@@ -54,3 +54,6 @@ pinout:
   uio[5]: "status bit 1"
   uio[6]: "mode bit 0"
   uio[7]: "mode bit 1 / done (output mode)"
+
+# Do not change!
+yaml_version: 6
