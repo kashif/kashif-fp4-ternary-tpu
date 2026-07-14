@@ -1,38 +1,32 @@
 /*
  * TT NVFP4 Ternary TPU — Top-Level Tiny Tapeout Module
  *
- * A 4x4 weight-stationary systolic array that performs matrix-vector
- * multiplication using E2M1 (NVFP4/MXFP4) 4-bit weights and ternary
- * {-1, 0, +1} activations. The multiply is reduced to add/subtract —
- * no hardware multiplier needed.
+ * 4x4 weight-stationary systolic array using E2M1 (NVFP4/MXFP4) 4-bit
+ * weights with ternary {-1,0,+1} activations. Multiply = MUX-add.
  *
  * Protocol:
  *   uio_in[7:6] = mode: 00=idle, 01=load, 10=compute, 11=output
  *
- *   LOAD (8 cycles for 16 weights):
- *     ui_in[7:4]  = weight_a (E2M1 4-bit)
- *     ui_in[3:0]  = weight_b (E2M1 4-bit)
- *     uio_in[5:3] = pair index (0-7)
- *
- *   COMPUTE (16 cycles = one NVFP4 block):
- *     ui_in[7:6]  = act_col0 (ternary: 00=0, 01=+1, 10=-1)
- *     ui_in[5:4]  = act_col1
- *     ui_in[3:2]  = act_col2
- *     ui_in[1:0]  = act_col3
- *     uio_in[0]   = relu_en
- *
- *   OUTPUT (32 cycles for 16 results x 2 bytes):
- *     uo_out[7:0] = result byte (high then low per 10-bit accumulator)
- *     uio_out[7]  = done flag
- *     uio_out[3:0]= status
+ *   LOAD (8 cycles): ui_in[7:4]=weight_a, ui_in[3:0]=weight_b, uio_in[5:3]=idx
+ *   COMPUTE (17 cycles): ui_in={act3,act2,act1,act0}, uio_in[0]=relu_en
+ *   OUTPUT (32 cycles): uo_out=result bytes, uio_out[7]=done, uio_out[3:0]=status
  *
  * HDL guide compliance (tinytapeout.com/hdl/important/):
  *   - Exact module port definition matching TT template
- *   - No initial blocks; explicit rst_n reset (tinytapeout.com/hdl/fpga_vs_asic/)
+ *   - No initial blocks; explicit rst_n reset (/hdl/fpga_vs_asic/)
  *   - All outputs assigned: uo_out, uio_out, uio_oe
+ *   - (* keep *) FFs for uio_oe/uio_out prevent LVS conb shorts
+ *     (pattern from Mini-TPU tt_um_tpu.v)
  *   - _unused wire suppresses warnings for unused inputs
  *   - default_nettype none
- *   - Top module named tt_um_<github_username>_<project>
+ *   - Top module: tt_um_<github_username>_<project>
+ *
+ * References:
+ *   - NVFP4: E2M1 + E4M3 scale per 16-element block (NVIDIA Blackwell)
+ *   - vLLM Qwix: fuses E4M3+FP32 scales into single FP32 blockwise scale
+ *   - PFW TPU: github.com/wangantian/pfw_tpu
+ *   - Mini-TPU: github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi
+ *   - TT template: github.com/TinyTapeout/ttsky-verilog-template
  */
 
 `default_nettype none
@@ -48,15 +42,12 @@ module tt_um_kashif_fp4_ternary_tpu (
     input  wire       rst_n     // reset_n - low to reset
 );
 
-    // Mode decode from uio_in[7:6]
     wire [1:0] mode = uio_in[7:6];
 
-    // Load interface
     wire [3:0] load_weight_a = ui_in[7:4];
     wire [3:0] load_weight_b = ui_in[3:0];
     wire [2:0] load_idx      = uio_in[5:3];
 
-    // Compute interface
     wire [1:0] act_col0 = ui_in[7:6];
     wire [1:0] act_col1 = ui_in[5:4];
     wire [1:0] act_col2 = ui_in[3:2];
@@ -72,18 +63,15 @@ module tt_um_kashif_fp4_ternary_tpu (
     wire [1:0]  act0_w, act1_w, act2_w, act3_w;
     wire        acc_clear;
 
-    // 16 accumulator wires (10-bit each) from array to control FSM
     wire [9:0] acc00, acc01, acc02, acc03;
     wire [9:0] acc10, acc11, acc12, acc13;
     wire [9:0] acc20, acc21, acc22, acc23;
     wire [9:0] acc30, acc31, acc32, acc33;
 
-    // Output from control FSM
     wire [7:0] result_byte;
     wire       done;
     wire [3:0] status;
 
-    // Control FSM
     control_fsm u_ctrl (
         .clk            (clk),
         .rst_n          (rst_n),
@@ -119,7 +107,6 @@ module tt_um_kashif_fp4_ternary_tpu (
         .status         (status)
     );
 
-    // 4x4 Systolic Array
     systolic_array_4x4 u_array (
         .clk         (clk),
         .rst_n       (rst_n),
@@ -143,12 +130,11 @@ module tt_um_kashif_fp4_ternary_tpu (
         .acc32       (acc32),  .acc33       (acc33)
     );
 
-    // Output assignments — all output pins must be driven.
-    // Use (* keep *) FFs for uio_oe/uio_out to prevent Yosys from tying
-    // them to conb cells whose internal pulldown causes magic LVS to
-    // short the pins to VGND (learned from Mini-TPU tt_um_tpu.v).
+    // uo_out driven directly (result_byte from FSM is already registered)
     assign uo_out = result_byte;
 
+    // (* keep *) FFs for uio_oe/uio_out prevent Yosys conb cells from
+    // causing magic LVS shorts to VGND (Mini-TPU pattern)
     (* keep = "true" *) reg [7:0] uio_oe_q;
     (* keep = "true" *) reg [7:0] uio_out_q;
     always @(posedge clk or negedge rst_n) begin
@@ -163,7 +149,7 @@ module tt_um_kashif_fp4_ternary_tpu (
     assign uio_oe  = uio_oe_q;
     assign uio_out = uio_out_q;
 
-    // List all unused inputs to prevent synthesis warnings
+    // Unused inputs
     wire _unused = &{ena, 1'b0};
 
 endmodule

@@ -2,38 +2,27 @@
  * Control FSM for NVFP4 Ternary TPU
  *
  * Protocol over TT pins (8-bit streaming):
+ *   uio_in[7:6] = mode: 00=idle, 01=load, 10=compute, 11=output
  *
- * uio_in[7:6] selects mode:
- *   00 = IDLE
- *   01 = LOAD_WEIGHTS: load 16 E2M1 weights, 2 per cycle, 8 cycles
- *       ui_in[7:4]  = weight_a (E2M1, 4 bits)
- *       ui_in[3:0]  = weight_b (E2M1, 4 bits)
- *       uio_in[5:3] = load_idx (0-7, which pair: row=idx[2:1], col_pair=idx[0])
- *   10 = COMPUTE: stream 16 ternary activations, one per cycle
- *       ui_in[7:6] = act_col0 (2-bit ternary: 00=0, 01=+1, 10=-1)
- *       ui_in[5:4] = act_col1
- *       ui_in[3:2] = act_col2
- *       ui_in[1:0] = act_col3
- *       uio_in[0]  = relu_en (1 = clamp negative outputs to 0)
- *   11 = OUTPUT: read back 16 accumulators
- *       uo_out[7:0] = result bytes (2 per accumulator: high then low)
- *       uio_out[7]  = done (1 when all 32 bytes sent)
+ *   LOAD (8 cycles): ui_in[7:4]=weight_a, ui_in[3:0]=weight_b, uio_in[5:3]=idx
+ *   COMPUTE (17 cycles): ui_in={act3,act2,act1,act0} (2-bit ternary each), uio_in[0]=relu_en
+ *   OUTPUT (32 cycles): uo_out=result bytes (2 per 10-bit acc), uio_out[7]=done
  *
- * Compute timeline (19 cycles total):
- *   cnt 0:      acc_clear=1, act_valid=0 (clear accumulators)
- *   cnt 1-16:   act_valid=1 (16 activation cycles = one NVFP4 block)
- *   cnt 17:     act_valid=0 (drain cycle for pipeline)
- *   cnt 18:     snapshot accumulators into acc_snap
+ * Compute timeline:
+ *   cnt 0: clear+first activation (PE clears then applies first MAC)
+ *   cnt 1-16: remaining 16 activations (total 17 act_valid cycles = 16 MACs)
+ *   cnt 17: drain (let last PE accumulation settle)
+ *   cnt 18: snapshot accumulators
  *
- * The drain cycle is needed because the PE registers have 1-cycle latency:
- * the FSM sets act_valid at edge N, the PE accumulates at edge N+1.
- * Without the drain, the non-blocking snapshot would miss the last activation.
+ * ASIC optimization (per /hdl/fpga_vs_asic/):
+ *   - weight_a/b/load_idx passed combinationally to array (saves 11 flops)
+ *   - act0..3 passed combinationally (saves 8 flops)
+ *   - Only compute_cnt, output_cnt, acc_snap[16], relu_en_latched need registers
  *
  * References:
  *   - PFW TPU control: github.com/wangantian/pfw_tpu/src/control_unit.v
  *   - Mini-TPU control: github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi/src/control.v
  *   - NVFP4 block size = 16 (NVIDIA Blackwell spec)
- *   - TT HDL guide: no initial blocks, explicit rst_n, all outputs assigned
  */
 
 `default_nettype none
@@ -56,13 +45,14 @@ module control_fsm (
     output reg  [7:0]  result_byte,
     output reg         done,
 
-    output reg         weight_load,
-    output reg  [3:0]  weight_a,
-    output reg  [3:0]  weight_b,
-    output reg  [2:0]  load_idx_out,
-    output reg         act_valid,
-    output reg  [1:0]  act0, act1, act2, act3,
-    output reg         acc_clear,
+    // Array control (combinational pass-through, no registers)
+    output wire        weight_load,
+    output wire [3:0]  weight_a,
+    output wire [3:0]  weight_b,
+    output wire [2:0]  load_idx_out,
+    output wire        act_valid,
+    output wire [1:0]  act0, act1, act2, act3,
+    output wire        acc_clear,
 
     input  wire [9:0]  acc00, acc01, acc02, acc03,
     input  wire [9:0]  acc10, acc11, acc12, acc13,
@@ -77,19 +67,18 @@ module control_fsm (
     localparam [1:0] MODE_COMPUTE = 2'b10;
     localparam [1:0] MODE_OUTPUT  = 2'b11;
 
-    // 0 = clear, 1-16 = compute, 17 = drain, 18 = snapshot
+    localparam [4:0] CNT_CLEAR        = 5'd0;
+    localparam [4:0] CNT_COMPUTE_LAST = 5'd18;  // 18 compute cycles (1-18) = 18 act_valid
+    localparam [4:0] CNT_DRAIN        = 5'd19;
+    localparam [4:0] CNT_SNAPSHOT     = 5'd20;
+
     reg [4:0] compute_cnt;
-    localparam [4:0] CNT_CLEAR    = 5'd0;
-    localparam [4:0] CNT_COMPUTE0 = 5'd1;
-    localparam [4:0] CNT_COMPUTE_LAST = 5'd17;  // 17 compute cycles (1-17)
-    localparam [4:0] CNT_DRAIN    = 5'd18;
-    localparam [4:0] CNT_SNAPSHOT = 5'd19;
-
     reg [5:0] output_cnt;
-
-    // Latched accumulators and ReLU-applied versions
-    reg [9:0] acc_snap [0:15];
     reg       relu_en_latched;
+    reg       compute_active;
+
+    // Latched accumulators
+    reg [9:0] acc_snap [0:15];
 
     // ReLU applied to latched values
     wire [9:0] acc_relu [0:15];
@@ -100,7 +89,7 @@ module control_fsm (
         end
     endgenerate
 
-    // Mux for reading acc_relu by index during output
+    // 16:1 mux for output readback
     reg [9:0] acc_read;
     always @(*) begin
         case (output_cnt[5:1])
@@ -123,72 +112,72 @@ module control_fsm (
         endcase
     end
 
+    // Registered pass-through to array (aligned with act_valid/acc_clear)
+    reg [1:0] act0_r, act1_r, act2_r, act3_r;
+    assign weight_load  = (mode == MODE_LOAD);
+    assign weight_a     = load_weight_a;
+    assign weight_b     = load_weight_b;
+    assign load_idx_out = load_idx;
+    assign act0         = act0_r;
+    assign act1         = act1_r;
+    assign act2         = act2_r;
+    assign act3         = act3_r;
+
+    // acc_clear and act_valid — fully registered for clean timing
+    reg act_valid_r;
+    reg acc_clear_r;
+    assign act_valid = act_valid_r;
+    assign acc_clear = acc_clear_r;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            compute_cnt     <= CNT_CLEAR;
-            output_cnt      <= 6'd0;
-            weight_load     <= 1'b0;
-            weight_a        <= 4'd0;
-            weight_b        <= 4'd0;
-            load_idx_out    <= 3'd0;
-            act_valid       <= 1'b0;
-            act0            <= 2'b00;
-            act1            <= 2'b00;
-            act2            <= 2'b00;
-            act3            <= 2'b00;
-            acc_clear       <= 1'b0;
-            result_byte     <= 8'd0;
-            done            <= 1'b0;
-            status          <= 4'd0;
-            relu_en_latched <= 1'b0;
+            compute_cnt      <= CNT_CLEAR;
+            output_cnt       <= 6'd0;
+            act_valid_r      <= 1'b0;
+            acc_clear_r      <= 1'b0;
+            act0_r           <= 2'b00;
+            act1_r           <= 2'b00;
+            act2_r           <= 2'b00;
+            act3_r           <= 2'b00;
+            result_byte      <= 8'd0;
+            done             <= 1'b0;
+            status           <= 4'd0;
+            relu_en_latched  <= 1'b0;
+            compute_active   <= 1'b0;
         end else begin
             // Defaults
-            weight_load <= 1'b0;
-            act_valid   <= 1'b0;
-            acc_clear   <= 1'b0;
+            act_valid_r <= 1'b0;
+            acc_clear_r <= 1'b0;
             done        <= 1'b0;
 
             case (mode)
                 MODE_LOAD: begin
-                    weight_load  <= 1'b1;
-                    weight_a     <= load_weight_a;
-                    weight_b     <= load_weight_b;
-                    load_idx_out <= load_idx;
-                    status       <= {2'b01, load_idx[2:0]};
+                    status <= {2'b01, load_idx[2:0]};
                 end
 
                 MODE_COMPUTE: begin
                     if (compute_cnt == CNT_CLEAR) begin
-                        // Cycle 0: clear accumulators AND start first activation.
-                        // The PE checks acc_clear before act_valid, so it clears
-                        // this cycle and the activation is consumed on the next.
-                        // This way we get exactly 16 MACs over cycles 0-15.
-                        acc_clear       <= 1'b1;
-                        act_valid       <= 1'b1;
-                        act0            <= act_col0;
-                        act1            <= act_col1;
-                        act2            <= act_col2;
-                        act3            <= act_col3;
-                        compute_cnt     <= CNT_COMPUTE0;
+                        acc_clear_r     <= 1'b1;
+                        act_valid_r     <= 1'b1;
+                        act0_r          <= act_col0;
+                        act1_r          <= act_col1;
+                        act2_r          <= act_col2;
+                        act3_r          <= act_col3;
+                        compute_cnt     <= 5'd1;
                         relu_en_latched <= relu_en;
                         status          <= 4'b1000;
                     end else if (compute_cnt <= CNT_COMPUTE_LAST) begin
-                        // Cycles 1-17: stream activations (17 cycles to get 16 MACs,
-                        // since cycle 1 coincides with the clear edge settling)
-                        act_valid   <= 1'b1;
-                        act0        <= act_col0;
-                        act1        <= act_col1;
-                        act2        <= act_col2;
-                        act3        <= act_col3;
+                        act_valid_r <= 1'b1;
+                        act0_r      <= act_col0;
+                        act1_r      <= act_col1;
+                        act2_r      <= act_col2;
+                        act3_r      <= act_col3;
                         compute_cnt <= compute_cnt + 5'd1;
                         status      <= {2'b10, compute_cnt[3:0]};
                     end else if (compute_cnt == CNT_DRAIN) begin
-                        // Cycle 17: drain (let last PE accumulation settle)
-                        act_valid   <= 1'b0;
                         compute_cnt <= CNT_SNAPSHOT;
                         status      <= 4'b1001;
                     end else begin
-                        // Cycle 18: snapshot accumulators
                         compute_cnt <= CNT_CLEAR;
                         status      <= 4'b1010;
                         acc_snap[0]  <= acc00;  acc_snap[1]  <= acc01;
@@ -204,13 +193,10 @@ module control_fsm (
 
                 MODE_OUTPUT: begin
                     if (output_cnt < 6'd32) begin
-                        if (output_cnt[0]) begin
-                            result_byte <= acc_read[7:0];
-                        end else begin
-                            result_byte <= {6'b0, acc_read[9:8]};
-                        end
-                        output_cnt <= output_cnt + 6'd1;
-                        status     <= {2'b11, output_cnt[3:0]};
+                        result_byte <= output_cnt[0] ? acc_read[7:0]
+                                                     : {6'b0, acc_read[9:8]};
+                        output_cnt  <= output_cnt + 6'd1;
+                        status      <= {2'b11, output_cnt[3:0]};
                     end else begin
                         done       <= 1'b1;
                         output_cnt <= 6'd0;

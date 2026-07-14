@@ -2,12 +2,8 @@
  * 4x4 Weight-Stationary Systolic Array for NVFP4 Ternary TPU
  *
  * 16 PEs in 4x4 grid. Weights loaded once, activations broadcast per column.
- *
- * Computation:
- *   PE[i][j] stores W[i][j] (E2M1, 4-bit)
- *   Each cycle, column j receives ternary activation act_j
- *   PE[i][j]: acc[i][j] += act_j * W[i][j]  (MUX-add, no multiplier)
- *   After 16 cycles (one NVFP4 block): acc[i][j] = W[i][j] * sum_k act_k[j]
+ * Each PE: acc[i][j] += act_j * W[i][j] (MUX-add, no multiplier)
+ * After 16 cycles: acc[i][j] = W[i][j] * sum_k act_k[j]
  *
  * References:
  *   - PFW TPU 2x2: github.com/wangantian/pfw_tpu/src/systolic_array_2x2.v
@@ -19,20 +15,16 @@
 module systolic_array_4x4 (
     input  wire        clk,
     input  wire        rst_n,
-
     input  wire        weight_load,
     input  wire [3:0]  weight_a,
     input  wire [3:0]  weight_b,
     input  wire [2:0]  load_idx,
-
     input  wire        act_valid,
     input  wire [1:0]  act_col0,
     input  wire [1:0]  act_col1,
     input  wire [1:0]  act_col2,
     input  wire [1:0]  act_col3,
-
     input  wire        acc_clear,
-
     output wire [9:0]  acc00, acc01, acc02, acc03,
     output wire [9:0]  acc10, acc11, acc12, acc13,
     output wire [9:0]  acc20, acc21, acc22, acc23,
@@ -42,15 +34,7 @@ module systolic_array_4x4 (
     wire [1:0] load_row = load_idx[2:1];
     wire       load_col_hi = load_idx[0];
 
-    // Internal accumulator wires from each PE
     wire [9:0] pe_acc [0:3][0:3];
-
-    // Activation bus
-    wire [1:0] act_bus [0:3];
-    assign act_bus[0] = act_col0;
-    assign act_bus[1] = act_col1;
-    assign act_bus[2] = act_col2;
-    assign act_bus[3] = act_col3;
 
     genvar r, c;
     generate
@@ -61,6 +45,9 @@ module systolic_array_4x4 (
                     && (load_col_hi == c[1]);
 
                 wire [3:0] pe_weight = c[0] ? weight_b : weight_a;
+                wire [1:0] pe_act = (c == 0) ? act_col0 :
+                                    (c == 1) ? act_col1 :
+                                    (c == 2) ? act_col2 : act_col3;
 
                 pe pe_inst (
                     .clk         (clk),
@@ -68,7 +55,7 @@ module systolic_array_4x4 (
                     .weight_load (pe_wload),
                     .weight_in   (pe_weight),
                     .act_valid   (act_valid),
-                    .act_in      (act_bus[c]),
+                    .act_in      (pe_act),
                     .acc_clear   (acc_clear),
                     .acc_out     (pe_acc[r][c])
                 );
@@ -76,7 +63,6 @@ module systolic_array_4x4 (
         end
     endgenerate
 
-    // Route internal wires to output ports
     assign acc00 = pe_acc[0][0];  assign acc01 = pe_acc[0][1];
     assign acc02 = pe_acc[0][2];  assign acc03 = pe_acc[0][3];
     assign acc10 = pe_acc[1][0];  assign acc11 = pe_acc[1][1];
