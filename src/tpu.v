@@ -16,9 +16,10 @@ module tpu (
 
     input  wire [15:0] instruction,
     output wire        ready_to_send,
-    output wire [7:0]  result,
-    output wire [62:0] array_data_out
+    output wire [7:0]  result
 );
+
+    wire [62:0] array_data_out;
 
     wire        array_write_enable;
     wire        array_clear;

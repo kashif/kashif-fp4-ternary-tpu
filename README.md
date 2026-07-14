@@ -64,7 +64,8 @@ A row 2 --> [PE 20] -> [PE 21] -> [PE 22]
 | `STORE`     | `11 0 rr cc 000000000` | C[r][c] as sign-extended byte on `uo_out` |
 
 Pins: `ui[0]`=MOSI, `ui[1]`=CS, `ui[2]`=SCLK; `uo_out`=result byte;
-`uio[0]`=MISO, `uio[1]`=ready.
+`uio[1]`=ready. The SPI is receive-only — results are read via STORE on
+`uo_out`, so the reference's MISO readback stream is omitted (area).
 
 ## File structure
 
@@ -72,7 +73,7 @@ Pins: `ui[0]`=MOSI, `ui[1]`=CS, `ui[2]`=SCLK; `uo_out`=result byte;
 src/
   project.v     # Top-level TT module (tt_um_kashif_fp4_ternary_tpu)
   tpu.v         # Core: control + memories + array + result mux (ReLU)
-  spi.v         # SPI slave, 16-bit instructions, 63-bit readback
+  spi.v         # SPI instruction receiver, 16-bit, receive-only
   control.v     # LOAD/RUN/STORE decode, skewed wavefront counter
   memory_a.v    # Activations: 3x3 ternary (2-bit)
   memory_b.v    # Weights: 3x3 E2M1 nibbles

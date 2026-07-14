@@ -13,7 +13,8 @@
  * Pinout:
  *   ui_in[0] = MOSI, ui_in[1] = CS (active low), ui_in[2] = SCLK
  *   uo_out   = result byte (selected by STORE, optional ReLU)
- *   uio[0]   = MISO (output), uio[1] = ready (output), rest unused
+ *   uio[1]   = ready (output), rest unused (SPI is receive-only;
+ *              results are read via STORE on uo_out)
  */
 
 `default_nettype none
@@ -35,16 +36,13 @@ module tt_um_kashif_fp4_ternary_tpu (
 
     wire [15:0] instruction;
     wire        ready_to_send;
-    wire [62:0] array_data_out;
-    wire        miso;
 
     tpu u_tpu (
         .clk            (clk),
         .rst_n          (rst_n),
         .instruction    (instruction),
         .ready_to_send  (ready_to_send),
-        .result         (uo_out),
-        .array_data_out (array_data_out)
+        .result         (uo_out)
     );
 
     spi u_spi (
@@ -53,30 +51,27 @@ module tt_um_kashif_fp4_ternary_tpu (
         .mosi               (mosi),
         .cs                 (cs),
         .sclk               (sclk),
-        .ready_to_send      (ready_to_send),
-        .data_in            (array_data_out),
-        .miso               (miso),
         .data_buffer_output (instruction)
     );
 
     // Drive uio_oe/uio_out through (* keep *) flip-flops instead of
     // constants: direct constant assigns synthesize to conb cells whose
     // pulldown nets magic merges with VGND during extraction, producing
-    // LVS mismatches (reference REPORT.md). uio[0] = MISO out,
-    // uio[1] = ready out, uio[7:2] = inputs (oe 0).
+    // LVS mismatches (reference REPORT.md). uio[1] = ready out,
+    // everything else stays an input (oe 0).
     (* keep = "true" *) reg [7:0] uio_oe_q;
-    (* keep = "true" *) reg [5:0] uio_out_high_q;
+    (* keep = "true" *) reg [6:0] uio_out_low_q;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            uio_oe_q       <= 8'b0;
-            uio_out_high_q <= 6'b0;
+            uio_oe_q      <= 8'b0;
+            uio_out_low_q <= 7'b0;
         end else begin
-            uio_oe_q       <= 8'b0000_0011;
-            uio_out_high_q <= 6'b0;
+            uio_oe_q      <= 8'b0000_0010;
+            uio_out_low_q <= 7'b0;
         end
     end
     assign uio_oe  = uio_oe_q;
-    assign uio_out = {uio_out_high_q, ready_to_send, miso};
+    assign uio_out = {uio_out_low_q[6:1], ready_to_send, uio_out_low_q[0]};
 
     wire _unused = &{ena, ui_in[7:3], uio_in, 1'b0};
 

@@ -39,7 +39,9 @@ readout.
 
 SCLK must be at most clk/6 (the SPI bit counter crosses clock domains
 unsynchronised, as in the reference). The `ready` pin (uio[1]) pulses when a
-RUN completes; alternatively just wait 7+ clock cycles.
+RUN completes; alternatively just wait 7+ clock cycles. The SPI is
+receive-only: all results are read via STORE on `uo_out` (the reference's
+MISO readback stream is omitted to save area on the 1x1 tile).
 
 ### E2M1 (NVFP4/MXFP4) weight encoding
 

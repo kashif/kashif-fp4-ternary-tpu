@@ -50,7 +50,7 @@ pinout:
   uo[7]: "result bit 7"
 
   # Bidirectional pins
-  uio[0]: "SPI MISO (output)"
+  uio[0]: ""
   uio[1]: "ready (output)"
   uio[2]: ""
   uio[3]: ""

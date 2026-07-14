@@ -1,7 +1,9 @@
 /*
- * SPI slave — ported from the reference mini-TPU spi.v (via the
- * companion Int7+1 design), 16-bit instructions, 63-bit accumulator
- * readback stream (9 x 7-bit).
+ * SPI instruction receiver — ported from the reference mini-TPU spi.v,
+ * widened to 16-bit instructions. Receive-only: results are read via
+ * STORE instructions on uo_out, so the reference's MISO accumulator
+ * readback stream (a 63-bit mux + counter) is omitted to save area on
+ * the 1x1 tile.
  *
  * MOSI shifts in on posedge SCLK while CS is low, LSB-first. When the
  * 16th bit lands, the bit counter wraps 15 -> 0; the clk-domain
@@ -23,34 +25,23 @@ module spi (
     input  wire        mosi,
     input  wire        cs,
     input  wire        sclk,
-    input  wire        ready_to_send,
-    input  wire [62:0] data_in,
 
-    output reg         miso,
     output wire [15:0] data_buffer_output
 );
 
     reg [15:0] data_buffer;
     reg [3:0]  bit_counter;
     reg [3:0]  bit_counter_prev;
-    reg [6:0]  output_data_bit_counter;
     reg        data_ready;
-    reg        is_sending;
 
     always @(posedge sclk or negedge rst_n) begin
         if (!rst_n) begin
-            data_buffer             <= 16'd0;
-            bit_counter             <= 4'd0;
-            output_data_bit_counter <= 7'd0;
-            miso                    <= 1'b0;
+            data_buffer <= 16'd0;
+            bit_counter <= 4'd0;
         end else begin
             if (bit_counter == 4'd15)
                 bit_counter <= 4'd0;
             if (!cs) begin
-                if (is_sending) begin
-                    miso <= data_in[output_data_bit_counter];
-                    output_data_bit_counter <= output_data_bit_counter + 7'd1;
-                end
                 data_buffer <= {mosi, data_buffer[15:1]};
                 if (bit_counter < 4'd15)
                     bit_counter <= bit_counter + 4'd1;
@@ -62,15 +53,10 @@ module spi (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            is_sending       <= 1'b0;
             data_ready       <= 1'b0;
             bit_counter_prev <= 4'd0;
         end else begin
             bit_counter_prev <= bit_counter;
-            if (ready_to_send && !cs)
-                is_sending <= 1'b1;
-            if (is_sending && output_data_bit_counter == 7'd63)
-                is_sending <= 1'b0;
             if (bit_counter == 4'd0 && bit_counter_prev == 4'd15)
                 data_ready <= 1'b1;
             else
