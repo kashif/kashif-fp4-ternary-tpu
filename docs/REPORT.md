@@ -28,7 +28,7 @@ that eliminate the hardware multiplier entirely.
 | Total PEs | 16 |
 | Effective MACs/cycle | 16 |
 | Accumulator | 10-bit signed (max ±192, 9 bits + margin) |
-| ReLU | Yes (combinational on latched snapshot) |
+| Activation functions | Host-side (correct only after cross-tile accumulation) |
 | Tile size | 1×1 |
 | I/O protocol | Direct pin streaming (no SPI) |
 | Total latency | ~57 cycles (8 load + 18 compute + 32 output) |
@@ -92,7 +92,7 @@ ASIC optimizations (per TT HDL guide /hdl/fpga_vs_asic/):
   (saves ~11 FFs — mode-gated, not state-dependent)
 - `act0_r..act3_r`, `act_valid_r`, `acc_clear_r` registered for timing
 - `acc_snap[0:15]` = 160 FFs for latched results
-- ReLU applied combinationally on snapshot via generate block
+- Activation functions host-side by design
 
 ### Output Path
 
@@ -115,7 +115,7 @@ LVS to short pins to VGND (pattern adopted from Mini-TPU `tt_um_tpu.v`).
 | Total latency | ~220+ cycles | ~41 cycles | **~57 cycles** |
 | MACs/cycle | 0.04 | 0.10 | **0.28** |
 | Tile | 1×1 | 1×2 | **1×1** |
-| ReLU | No | Yes | **Yes** |
+| ReLU | No | Yes | **No (host-side by design)** |
 | Numerics | Educational INT4 | INT8 | **NVFP4 (Blackwell)** |
 
 ## 5. Verification
@@ -126,7 +126,7 @@ LVS to short pins to VGND (pattern adopted from Mini-TPU `tt_um_tpu.v`).
 |------|-----------------|---------------|
 | `test_basic_mac` | Known weights + column-specific activations | Original |
 | `test_varied_weights` | All 8 E2M1 magnitudes | Original |
-| `test_relu` | ReLU clamps negatives to 0 | Original |
+| `test_int4_mode` | INT4 decode mode + mode latching | Original |
 | `test_zero_weights` | Zero weights → zero output | Mini-TPU pattern |
 | `test_zero_activations` | Zero activations → zero output | Mini-TPU pattern |
 | `test_max_accumulation` | Boundary: weight=6.0, 16×+1 = 192 | Mini-TPU pattern |
