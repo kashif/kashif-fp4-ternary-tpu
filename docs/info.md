@@ -17,8 +17,13 @@ ternary activations the multiply-accumulate reduces to a mux-add,
 
 E2M1 weights are decoded combinationally to the x2 integer domain
 (0, 1, 2, 3, 4, 6, 8, 12 with sign; -0 = 0), so results are exact 7-bit
-signed integers (max |C| = 36). The host applies the NVFP4 E4M3 block scale
-and FP32 tensor scale in software during dequantization.
+signed integers (max |C| = 36). Block scaling happens on the host during
+dequantization, which makes the chip element-level format-agnostic: apply
+E4M3 scales per 16-element block (+ FP32 tensor scale) for **NVFP4**
+semantics, or E8M0 power-of-two scales per 32-element block for **MXFP4**.
+NVFP4 is the more accurate of the two (smaller blocks isolate outliers;
+FP8 scales are far finer than powers of two), and the exact integer
+accumulators let the host apply per-block scales to bit-exact partial sums.
 
 Architecture, SPI protocol, and skewed-wavefront control follow the proven
 reference mini-TPU
@@ -43,7 +48,7 @@ RUN completes; alternatively just wait 7+ clock cycles. The SPI is
 receive-only: all results are read via STORE on `uo_out` (the reference's
 MISO readback stream is omitted to save area on the 1x1 tile).
 
-### E2M1 (NVFP4/MXFP4) weight encoding
+### E2M1 weight encoding (element type of NVFP4 and MXFP4)
 
 | Code | Value | x2 integer |     | Code | Value | x2 integer |
 |------|-------|------------|-----|------|-------|------------|

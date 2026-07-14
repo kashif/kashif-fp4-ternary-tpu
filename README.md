@@ -25,14 +25,29 @@ skip:
 The most expensive cell in a conventional PE simply doesn't exist here — each
 PE is an E2M1 decoder, a mux, and a 7-bit adder.
 
-### NVFP4, same format as Blackwell
+### NVFP4 elements, same as Blackwell (and how MXFP4 differs)
 
 E2M1 weights (1 sign + 2 exponent + 1 mantissa) represent
-±{0, 0.5, 1, 1.5, 2, 3, 4, 6} — identical to
+±{0, 0.5, 1, 1.5, 2, 3, 4, 6} — the element encoding shared by
 [NVFP4](https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/)
-/ MXFP4. The chip computes in the x2 integer domain (0..12 with sign),
-exactly; the host applies the E4M3 block scale + FP32 tensor scale in
-software, as NVFP4 dequantization prescribes.
+and MXFP4. The two formats differ only in **block scaling**, which in this
+architecture lives on the host:
+
+| | NVFP4 | MXFP4 (OCP MX) |
+|---|---|---|
+| Element type | E2M1 | E2M1 |
+| Block size | **16** | 32 |
+| Block scale | **E4M3 (FP8)** | E8M0 (power of 2) |
+| Tensor scale | FP32 | — |
+
+NVFP4's smaller blocks isolate outliers better and its FP8 scales quantize
+far finer than powers of two — which is why it's the more accurate format,
+especially for LLMs. The chip computes raw E2M1 products in the x2 integer
+domain, exactly; the host applies whichever block-scaling scheme it wants
+during dequantization, so the same silicon serves **both** formats. Because
+the accumulators are exact, the host can apply per-block scales to bit-exact
+partial sums (a K=16 NVFP4 block spans multiple K=3 tiles) with no
+accumulated rounding from the hardware.
 
 ### A real systolic matmul
 
