@@ -143,8 +143,7 @@ LVS to short pins to VGND (pattern adopted from Mini-TPU `tt_um_tpu.v`).
 
 ### Known Limitations
 
-- Golden model mirrors PE structure (not fully independent — see
-  cross-pollination doc for improvement plan)
+- Golden model mirrors PE structure (not fully independent — improvement planned)
 - Weight register has no reset (requires `gl_preheat()` in GL sim)
 - Matrix-vector only (not true GEMM — broadcast architecture)
 - No on-chip weight memory (weights re-streamed each call)
