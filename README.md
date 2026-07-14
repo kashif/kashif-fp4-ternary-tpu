@@ -1,173 +1,119 @@
 ![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# NVFP4 Ternary TPU
+# NVFP4 Ternary Mini-TPU
 
-A 4x4 weight-stationary systolic array for matrix-vector multiplication using **NVFP4 (E2M1) 4-bit floating-point weights** with **ternary {-1, 0, +1} activations** — the first open-silicon NVFP4-format inference accelerator.
+A 3x3 output-stationary systolic array computing `C = A x W` with **NVFP4
+(E2M1) 4-bit floating-point weights** and **ternary {-1, 0, +1} activations**
+— and **no hardware multiplier anywhere**. Fits a single Tiny Tapeout 1x1
+tile.
 
 - [Read the documentation for project](docs/info.md)
-- [Design notes & future ideas](DESIGN_NOTES.md)
 
-## Why This Design Is Innovative
+## Why it's interesting
 
-### No hardware multiplier
+### No multiplier
 
-With ternary activations, the multiply-accumulate (MAC) operation reduces to **add / subtract / no-op** — no multiplier is needed:
+With ternary activations, multiply-accumulate reduces to add / subtract /
+skip:
 
-| Activation | Operation | Hardware |
-|-----------|-----------|----------|
-| +1 | `acc += weight` | adder |
-| -1 | `acc -= weight` | subtractor |
-| 0 | `acc` unchanged | nothing |
+| Activation | Operation |
+|-----------|-----------|
+| +1 | `acc += weight` |
+| -1 | `acc -= weight` |
+| 0  | `acc` unchanged |
 
-This eliminates the most expensive cell in each processing element (PE). A conventional 4-bit INT multiplier (~200+ gates) is replaced by a MUX + adder (~60 gates), allowing 16 PEs (4x4) to fit in a 1x1 tile where a conventional design fits only 9 (3x3).
+The most expensive cell in a conventional PE simply doesn't exist here — each
+PE is an E2M1 decoder, a mux, and a 7-bit adder.
 
-### NVFP4 format — same as NVIDIA Blackwell
+### NVFP4, same format as Blackwell
 
-The E2M1 weight format (1 sign + 2 exponent + 1 mantissa) is identical to **NVFP4** and **MXFP4** — the 4-bit floating-point formats used in NVIDIA Blackwell Tensor Cores and the OCP Microscaling (MX) spec. The chip outputs raw integer accumulators; the host RP2040 applies the E4M3 block scale and FP32 tensor scale in software (NVFP4 dequantization).
+E2M1 weights (1 sign + 2 exponent + 1 mantissa) represent
+±{0, 0.5, 1, 1.5, 2, 3, 4, 6} — identical to
+[NVFP4](https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/)
+/ MXFP4. The chip computes in the x2 integer domain (0..12 with sign),
+exactly; the host applies the E4M3 block scale + FP32 tensor scale in
+software, as NVFP4 dequantization prescribes.
 
-### Comparison with existing TinyTapeout TPU designs
+### A real systolic matmul
 
-| Feature | Mini-TPU (IEEE_ttsky_mini_tpu_spi) | PFW TPU | **This design** |
-|---------|-------------------------------------|---------|-----------------|
-| Array size | 3x3 = 9 PEs | 2x2 = 4 PEs | **4x4 = 16 PEs** |
-| Weight format | INT4 | INT8 | **E2M1 / NVFP4** |
-| Activation format | INT4 | INT8 | **Ternary {-1,0,+1}** |
-| Multiply hardware | 4x4 integer multiplier | 8x8 integer multiplier | **MUX + adder (no multiplier)** |
-| PE register count | 3 | 3 | **2** |
-| PE gate estimate | ~200+ | ~400+ | **~60** |
-| I/O protocol | SPI (12-bit instructions) | Parallel (8-bit streaming) | **Parallel (8-bit streaming)** |
-| Weight load time | ~108+ cycles | 8 cycles | **8 cycles** |
-| Total matmul latency | ~220+ cycles | ~41 cycles | **~57 cycles** |
-| Throughput (MACs/cycle) | 0.04 | 0.10 | **0.28** |
-| Tile size | 1x1 | 1x2 | **1x1** |
-| ReLU | No | Yes | **Yes** |
-
-### ASIC-optimized design
-
-Following the [TT HDL guide](https://tinytapeout.com/hdl/fpga_vs_asic/):
-- **Minimal flops**: Weight magnitude decoded combinationally (only 2 registers per PE: 4-bit weight code + 10-bit accumulator)
-- **No `initial` blocks**: Explicit `rst_n` reset on accumulator only
-- **`(* keep *)` FFs** on unused output pins to prevent Yosys `conb` cells from causing LVS shorts to VGND (pattern from [Mini-TPU](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi))
-
-## Architecture
+The architecture is the silicon-proven
+[Mini-TPU v2](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi): operand
+memories, skewed 7-cycle wavefront, activations flowing right, weights
+flowing down, results accumulating in place. Both operand streams change
+every cycle — the array computes true dot products
+(`C[i][c] = sum_k A[i][k] * W[k][c]`), verified against an independent golden
+model.
 
 ```
-         act_col0  act_col1  act_col2  act_col3
-            |         |         |         |
-         +---+     +---+     +---+     +---+
-    W[0]  |PE |     |PE |     |PE |     |PE |
-         +---+     +---+     +---+     +---+
-    W[1]  |PE |     |PE |     |PE |     |PE |
-         +---+     +---+     +---+     +---+
-    W[2]  |PE |     |PE |     |PE |     |PE |
-         +---+     +---+     +---+     +---+
-    W[3]  |PE |     |PE |     |PE |     |PE |
-         +---+     +---+     +---+     +---+
+            W col 0    W col 1    W col 2      (E2M1 nibbles, skewed)
+               |          |          |
+A row 0 --> [PE 00] -> [PE 01] -> [PE 02]      A rows: ternary codes
+               |          |          |
+A row 1 --> [PE 10] -> [PE 11] -> [PE 12]
+               |          |          |
+A row 2 --> [PE 20] -> [PE 21] -> [PE 22]
 ```
 
-- 16 PEs, each storing one E2M1 weight (4 bits)
-- Activations broadcast down columns each cycle
-- After 16 cycles (one NVFP4 block): each PE holds `acc = W[i][j] * sum(act[j])`
-- Host applies E4M3 block scale + FP32 tensor scale (NVFP4 dequantization)
+### SPI instruction set (16 bits, LSB-first; SCLK <= clk/6)
 
-### E2M1 Format (NVFP4/MXFP4)
+| Instruction | Format (binary)        | Description |
+|-------------|------------------------|-------------|
+| `LOAD A`    | `10 0 rr 0ee 000000tt` | Ternary activation into row `r`, element `e` |
+| `LOAD B`    | `10 1 cc 0kk 0000wwww` | E2M1 nibble into column `c`, step `k` |
+| `RUN`       | `01 r 0000000000000`   | Clear accumulators, run 7 cycles; `r`=1 = ReLU |
+| `STORE`     | `11 0 rr cc 000000000` | C[r][c] as sign-extended byte on `uo_out` |
 
-4-bit encoding: 1 sign + 2 exponent + 1 mantissa
+Pins: `ui[0]`=MOSI, `ui[1]`=CS, `ui[2]`=SCLK; `uo_out`=result byte;
+`uio[0]`=MISO, `uio[1]`=ready.
 
-| Code | Value | x2 (integer) |
-|------|-------|-------------|
-| 0000 | +0.0  | 0 |
-| 0001 | +0.5  | 1 |
-| 0010 | +1.0  | 2 |
-| 0011 | +1.5  | 3 |
-| 0100 | +2.0  | 4 |
-| 0101 | +3.0  | 6 |
-| 0110 | +4.0  | 8 |
-| 0111 | +6.0  | 12 |
-| 1000 | -0.0  | 0 |
-| 1001 | -0.5  | 1 |
-| ...  | ...   | ... |
-
-### Protocol
-
-```
-uio_in[7:6] selects mode:
-
-00 = IDLE
-01 = LOAD (8 cycles):  ui_in[7:4]=weight_a, ui_in[3:0]=weight_b, uio_in[5:3]=pair_idx
-10 = COMPUTE (17 cycles): ui_in = {act3, act2, act1, act0} (2-bit ternary each), uio_in[0]=relu_en
-11 = OUTPUT (32 cycles): uo_out = result bytes (2 per accumulator), uio_out[7]=done
-```
-
-## File Structure
+## File structure
 
 ```
 src/
-  project.v              # Top-level TT module (tt_um_kashif_fp4_ternary_tpu)
-  pe.v                   # Processing element: E2M1 weight + ternary MAC
-  systolic_array_4x4.v   # 4x4 weight-stationary grid
-  control_fsm.v          # IDLE/LOAD/COMPUTE/OUTPUT state machine
-docs/
-  info.md                # Datasheet with protocol + E2M1 table
+  project.v     # Top-level TT module (tt_um_kashif_fp4_ternary_tpu)
+  tpu.v         # Core: control + memories + array + result mux (ReLU)
+  spi.v         # SPI slave, 16-bit instructions, 63-bit readback
+  control.v     # LOAD/RUN/STORE decode, skewed wavefront counter
+  memory_a.v    # Activations: 3x3 ternary (2-bit)
+  memory_b.v    # Weights: 3x3 E2M1 nibbles
+  array.v       # 3x3 systolic array, 7-bit exact accumulators
+  pe.v          # E2M1 decode + ternary mux-add MAC (no multiplier)
 test/
-  tb.v                   # Verilog testbench (GL_TEST compatible)
-  test.py                # 9 cocotb tests
-  Makefile               # icarus/cocotb build
-DESIGN_NOTES.md           # Int7+1 structured sparsity idea for future
-info.yaml                 # TT metadata: 1x1 tile, 50MHz, SKY130A
+  tb.v          # Verilog testbench (GL_TEST compatible)
+  test.py       # 7 cocotb tests with independent golden model
+  Makefile      # icarus/cocotb build
+info.yaml       # TT metadata: 1x1 tile, 5 MHz, SKY130A
 ```
 
 ## Verification
 
-9 cocotb tests, all passing in RTL simulation and GitHub Actions CI:
+7 cocotb tests drive the SPI interface like an external host and compare all
+9 results against an independent golden model:
 
-| Test | Description | Pattern source |
-|------|-------------|---------------|
-| `test_basic_mac` | Uniform weights, known activations | Original |
-| `test_varied_weights` | Different E2M1 value per PE | Original |
-| `test_relu` | ReLU clamping on negative outputs | Original |
-| `test_zero_weights` | Zero weights -> zero output | Mini-TPU `test_zero` |
-| `test_zero_activations` | Zero acts -> zero output | Mini-TPU `test_zero` |
-| `test_max_accumulation` | Boundary: weight=6.0, 16x+1=192 | Mini-TPU `test_overflow` |
-| `test_negative_weights` | Negative E2M1 with mixed activations | Original |
-| `test_random` | 50 seeded random weight/activation trials | Mini-TPU `test_random` |
-| `test_back_to_back` | Consecutive matmuls verify state reset | Mini-TPU `test_back_to_back` |
-
-Gate-level test compatibility (from [Mini-TPU](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi)):
-- `_safe_int()` for X-propagation-safe LogicArray reads
-- `gl_preheat()` runs a zero-weight matmul to flush X from pipeline regs before GL tests
-- `VPWR`/`VGND` power pin wiring via `GL_TEST` ifdef in testbench
-
-## Running Tests Locally
-
-```bash
-# Install dependencies
-sudo pacman -S iverilog          # Arch Linux
-pip install cocotb pytest
-
-# Run tests
-cd test
-make clean && make
-```
+| Test | Description |
+|------|-------------|
+| `test_known_matmul` | Hand-checked matmul, mixed E2M1 values |
+| `test_ternary_semantics` | +1 adds, -1 subtracts, 0 skips |
+| `test_relu` | ReLU flag clamps negatives; off passes them |
+| `test_not_degenerate` | Equal-sum activations must differ (guards against w*sum collapse) |
+| `test_run_clears_accumulators` | Back-to-back RUNs don't double |
+| `test_negative_zero` | E2M1 -0 behaves as exact zero |
+| `test_random` | 12 randomized full-coverage trials (random ReLU) |
 
 ## Target
 
 - **Shuttle**: TTSKY26c (SkyWater SKY130A)
 - **Tile**: 1x1 (~167x108 um)
-- **Clock**: 50 MHz
-- **Deadline**: 2026-09-07
+- **Clock**: 5 MHz (SPI SCLK <= 833 kHz)
 
 ## References
 
 - [NVFP4: NVIDIA Blackwell format](https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/)
 - [OCP Microscaling (MX) Formats spec](https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf)
 - [Ternary Weight Networks (Li et al. 2016)](https://arxiv.org/abs/1605.04711)
-- [Binarized Neural Networks (Hubara et al. 2016)](https://arxiv.org/abs/1602.02830)
-- [PFW TPU](https://github.com/wangantian/pfw_tpu) — INT8 2x2 systolic, TT SKY26b
-- [Mini-TPU v2](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi) — INT4 3x3 systolic, TT SKY26b
-- [FP8 MAC Unit](https://github.com/chatelao/ttihp-fp8-mul) — OCP MX streaming MAC, TT IHP26a
-- [TT HDL Guide](https://tinytapeout.com/hdl/) — FPGA-to-ASIC considerations
-- [TT Tech Specs](https://tinytapeout.com/specs/) — Clock, GPIO, analog, memory constraints
+- [Mini-TPU v2](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi) — architecture and SPI protocol base
+- [Companion design: Int7+1 Sparse Mini-TPU](https://github.com/kashif/kashif-int7-sparse-tpu)
+- [TT HDL Guide](https://tinytapeout.com/hdl/) / [TT Tech Specs](https://tinytapeout.com/specs/)
 
 ## What is Tiny Tapeout?
 
